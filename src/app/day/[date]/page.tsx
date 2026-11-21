@@ -6,8 +6,13 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabase";
 import { useDisplayUnit } from "@/lib/useDisplayUnit";
 import UnitToggle from "@/components/UnitToggle";
+import NumInput from "@/components/NumInput";
 import ExerciseCard from "@/components/ExerciseCard";
 import ExercisePicker, { HistoryItem } from "@/components/ExercisePicker";
+import MealsTab from "@/components/MealsTab";
+import SleepTab from "@/components/SleepTab";
+import { Food, Meal, MealEntry, sumEntries, toFood } from "@/lib/nutrition";
+import { formatDuration, sleepMinutes } from "@/lib/sleep";
 import {
   ExerciseEntry,
   Mode,
@@ -16,6 +21,7 @@ import {
   Unit,
   WORKOUT_TYPES,
   WorkoutType,
+  convert,
   dayTotals,
   formatNumber,
   formatSeconds,
@@ -35,7 +41,30 @@ interface RawRow {
   workout_days?: { date: string; type: WorkoutType | null } | null;
 }
 
+interface MealRow {
+  meal: Meal;
+  position: number;
+  food_id: string;
+  quantity: number;
+}
+
+type Tab = "workout" | "meals" | "sleep";
+const TABS: { value: Tab; label: string }[] = [
+  { value: "workout", label: "Workout" },
+  { value: "meals", label: "Meals" },
+  { value: "sleep", label: "Sleep" },
+];
+const TAB_KEY = "day-tab";
+
 const hasData = (s: SetEntry) => !!(s.reps || s.weight || s.seconds);
+const round2 = (n: number) => Math.round(n * 100) / 100;
+const timeOrEmpty = (t: string | null | undefined) => (t ? t.slice(0, 5) : "");
+
+function toMealEntries(rows: MealRow[]): MealEntry[] {
+  return [...rows]
+    .sort((a, b) => a.position - b.position)
+    .map((r) => ({ key: newKey(), meal: r.meal, foodId: r.food_id, quantity: Number(r.quantity) }));
+}
 
 export default function DayPage() {
   const params = useParams<{ date: string }>();
@@ -43,29 +72,92 @@ export default function DayPage() {
   const router = useRouter();
   const [displayUnit, setDisplayUnit] = useDisplayUnit();
 
+  const [tab, setTab] = useState<Tab>("workout");
+
+  // workout
   const [type, setType] = useState<WorkoutType | null>(null);
   const [items, setItems] = useState<ExerciseEntry[]>([]);
   const [history, setHistory] = useState<HistoryItem[]>([]);
+
+  // daily log
+  const [weightKg, setWeightKg] = useState<number | null>(null);
+  const [prevWeight, setPrevWeight] = useState<{ date: string; kg: number } | null>(null);
+  const [bed, setBed] = useState("");
+  const [wake, setWake] = useState("");
+  const [recentSleep, setRecentSleep] = useState<number[]>([]);
+
+  // meals
+  const [foods, setFoods] = useState<Food[]>([]);
+  const [meals, setMeals] = useState<MealEntry[]>([]);
+  const [previousMealDate, setPreviousMealDate] = useState<string | null>(null);
+
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [dirty, setDirty] = useState(false);
+  const [dirtyParts, setDirtyParts] = useState({ workout: false, meals: false, log: false });
   const [message, setMessage] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+  const dirty = dirtyParts.workout || dirtyParts.meals || dirtyParts.log;
 
   const dateObj = useMemo(() => parseISODate(date), [date]);
+
+  useEffect(() => {
+    try {
+      const t = sessionStorage.getItem(TAB_KEY);
+      if (t === "workout" || t === "meals" || t === "sleep") setTab(t);
+    } catch {}
+  }, []);
+  const pickTab = (t: Tab) => {
+    setTab(t);
+    try {
+      sessionStorage.setItem(TAB_KEY, t);
+    } catch {}
+  };
+
+  const markDirty = (part: keyof typeof dirtyParts) => {
+    setDirtyParts((d) => (d[part] ? d : { ...d, [part]: true }));
+    setMessage(null);
+  };
 
   // ---------- load ----------
   const load = useCallback(async () => {
     setLoading(true);
     setMessage(null);
     const sb = supabase();
+    const errors: string[] = [];
+
+    const weekAgo = parseISODate(date);
+    weekAgo.setDate(weekAgo.getDate() - 6);
 
     const dayReq = sb
       .from("workout_days")
       .select("type, day_exercises(section, position, unit, mode, sets, exercises(name))")
       .eq("date", date)
       .maybeSingle();
+    const logReq = sb.from("daily_logs").select("weight_kg, bed_time, wake_time").eq("date", date).maybeSingle();
+    const prevWeightReq = sb
+      .from("daily_logs")
+      .select("date, weight_kg")
+      .lt("date", date)
+      .not("weight_kg", "is", null)
+      .order("date", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    const recentReq = sb
+      .from("daily_logs")
+      .select("date, bed_time, wake_time")
+      .gte("date", toISODate(weekAgo))
+      .lt("date", date)
+      .order("date", { ascending: false });
+    const foodsReq = sb.from("foods").select("*").order("name");
+    const mealsReq = sb.from("meal_items").select("meal, position, food_id, quantity").eq("date", date);
+    const prevMealReq = sb
+      .from("meal_items")
+      .select("date")
+      .lt("date", date)
+      .order("date", { ascending: false })
+      .limit(1)
+      .maybeSingle();
 
-    // all previous sessions (paged, Supabase returns max 1000 rows per request)
+    // all previous workout sessions (paged, Supabase returns max 1000 rows per request)
     const histRows: RawRow[] = [];
     const PAGE = 1000;
     for (let from = 0; ; from += PAGE) {
@@ -75,15 +167,26 @@ export default function DayPage() {
         .lt("workout_days.date", date)
         .range(from, from + PAGE - 1);
       if (error) {
-        setMessage({ kind: "err", text: error.message });
+        errors.push(error.message);
         break;
       }
       histRows.push(...((data ?? []) as unknown as RawRow[]));
       if (!data || data.length < PAGE) break;
     }
 
-    const { data: day, error: dayErr } = await dayReq;
-    if (dayErr) setMessage({ kind: "err", text: dayErr.message });
+    const [dayRes, logRes, prevWRes, recentRes, foodsRes, mealsRes, prevMealRes] = await Promise.all([
+      dayReq,
+      logReq,
+      prevWeightReq,
+      recentReq,
+      foodsReq,
+      mealsReq,
+      prevMealReq,
+    ]);
+    for (const r of [dayRes, logRes, prevWRes, recentRes, foodsRes, mealsRes, prevMealRes]) {
+      if (r.error) errors.push(r.error.message);
+    }
+    if (errors.length) setMessage({ kind: "err", text: errors[0] });
 
     // build history: per exercise, most recent session (any workout type) + which types/sections it was done in
     const map = new Map<string, HistoryItem>();
@@ -106,6 +209,7 @@ export default function DayPage() {
     }
     setHistory([...map.values()].sort((a, b) => (b.last?.date ?? "").localeCompare(a.last?.date ?? "")));
 
+    const day = dayRes.data;
     const rows = ((day?.day_exercises ?? []) as unknown as RawRow[]).sort(
       (a, b) => (a.position ?? 0) - (b.position ?? 0)
     );
@@ -120,7 +224,23 @@ export default function DayPage() {
         sets: r.sets ?? [],
       }))
     );
-    setDirty(false);
+
+    const log = logRes.data;
+    setWeightKg(log?.weight_kg != null ? Number(log.weight_kg) : null);
+    setBed(timeOrEmpty(log?.bed_time));
+    setWake(timeOrEmpty(log?.wake_time));
+    setPrevWeight(prevWRes.data ? { date: prevWRes.data.date, kg: Number(prevWRes.data.weight_kg) } : null);
+    setRecentSleep(
+      (recentRes.data ?? [])
+        .map((r) => sleepMinutes(r.bed_time, r.wake_time))
+        .filter((m): m is number => m != null)
+    );
+
+    setFoods((foodsRes.data ?? []).map(toFood));
+    setMeals(toMealEntries((mealsRes.data ?? []) as MealRow[]));
+    setPreviousMealDate(prevMealRes.data?.date ?? null);
+
+    setDirtyParts({ workout: false, meals: false, log: false });
     setLoading(false);
   }, [date]);
 
@@ -138,11 +258,10 @@ export default function DayPage() {
     return () => window.removeEventListener("beforeunload", h);
   }, [dirty]);
 
-  // ---------- mutations ----------
+  // ---------- workout mutations ----------
   const change = (fn: (prev: ExerciseEntry[]) => ExerciseEntry[]) => {
     setItems(fn);
-    setDirty(true);
-    setMessage(null);
+    markDirty("workout");
   };
 
   const historyByName = useMemo(() => {
@@ -191,16 +310,49 @@ export default function DayPage() {
 
   const pickType = (t: WorkoutType) => {
     setType((cur) => (cur === t ? null : t));
-    setDirty(true);
-    setMessage(null);
+    markDirty("workout");
+  };
+
+  // ---------- meals / log mutations ----------
+  const changeMeals = (next: MealEntry[]) => {
+    setMeals(next);
+    markDirty("meals");
+  };
+
+  const onFoodSaved = (f: Food) =>
+    setFoods((prev) => {
+      const list = prev.some((p) => p.id === f.id) ? prev.map((p) => (p.id === f.id ? f : p)) : [...prev, f];
+      return list.sort((a, b) => a.name.localeCompare(b.name));
+    });
+
+  const copyPreviousMeals = async () => {
+    if (!previousMealDate) return;
+    const { data, error } = await supabase()
+      .from("meal_items")
+      .select("meal, position, food_id, quantity")
+      .eq("date", previousMealDate);
+    if (error) {
+      setMessage({ kind: "err", text: error.message });
+      return;
+    }
+    changeMeals(toMealEntries((data ?? []) as MealRow[]));
+  };
+
+  const weightShown =
+    weightKg == null ? null : displayUnit === "kg" ? round2(weightKg) : round2(convert(weightKg, "kg", "lb"));
+  const setWeightShown = (v: number | null) => {
+    setWeightKg(v == null ? null : displayUnit === "kg" ? v : convert(v, "lb", "kg"));
+    markDirty("log");
+  };
+
+  const changeSleep = (patch: { bed?: string; wake?: string }) => {
+    if (patch.bed !== undefined) setBed(patch.bed);
+    if (patch.wake !== undefined) setWake(patch.wake);
+    markDirty("log");
   };
 
   // ---------- save ----------
-  const save = async (override?: { type: WorkoutType | null; items: ExerciseEntry[] }) => {
-    setSaving(true);
-    setMessage(null);
-    const t = override ? override.type : type;
-    const list = override ? override.items : items;
+  const saveWorkout = async (t: WorkoutType | null, list: ExerciseEntry[]) => {
     const payload = list.map((i) => ({
       name: i.name,
       section: i.section,
@@ -209,21 +361,64 @@ export default function DayPage() {
       sets: i.sets.map((s) => ({ reps: s.reps, weight: s.weight, seconds: s.seconds })),
     }));
     const { error } = await supabase().rpc("save_day", { p_date: date, p_type: t, p_items: payload });
-    setSaving(false);
-    if (error) {
-      setMessage({ kind: "err", text: error.message });
-      return false;
-    }
-    setDirty(false);
-    setMessage({ kind: "ok", text: "Saved" });
-    return true;
+    return error?.message ?? null;
   };
 
-  const clearDay = async () => {
-    if (!confirm("Clear everything logged for this day?")) return;
+  const saveMeals = async () => {
+    const payload = meals
+      .filter((m) => m.quantity && m.quantity > 0)
+      .map((m) => ({ food_id: m.foodId, meal: m.meal, quantity: m.quantity }));
+    const { error } = await supabase().rpc("save_meals", { p_date: date, p_items: payload });
+    return error?.message ?? null;
+  };
+
+  const saveLog = async () => {
+    const { error } = await supabase().rpc("save_daily_log", {
+      p_date: date,
+      p_weight_kg: weightKg,
+      p_bed_time: bed || null,
+      p_wake_time: wake || null,
+    });
+    return error?.message ?? null;
+  };
+
+  const save = async () => {
+    setSaving(true);
+    setMessage(null);
+    const parts = (Object.keys(dirtyParts) as (keyof typeof dirtyParts)[]).filter((p) => dirtyParts[p]);
+    const results = await Promise.all(
+      parts.map(async (p) => {
+        const err = p === "workout" ? await saveWorkout(type, items) : p === "meals" ? await saveMeals() : await saveLog();
+        return { p, err };
+      })
+    );
+    setSaving(false);
+    const failed = results.filter((r) => r.err);
+    setDirtyParts((d) => {
+      const next = { ...d };
+      for (const r of results) if (!r.err) next[r.p] = false;
+      return next;
+    });
+    if (failed.length) {
+      setMessage({ kind: "err", text: failed[0].err! });
+      return;
+    }
+    setMessage({ kind: "ok", text: "Saved" });
+  };
+
+  const clearWorkout = async () => {
+    if (!confirm("Clear the workout logged for this day?")) return;
     setType(null);
     setItems([]);
-    await save({ type: null, items: [] });
+    setSaving(true);
+    const err = await saveWorkout(null, []);
+    setSaving(false);
+    if (err) {
+      setMessage({ kind: "err", text: err });
+      return;
+    }
+    setDirtyParts((d) => ({ ...d, workout: false }));
+    setMessage({ kind: "ok", text: "Workout cleared" });
   };
 
   const goto = (offset: number) => {
@@ -257,6 +452,13 @@ export default function DayPage() {
 
   const allNames = useMemo(() => history.map((h) => h.name), [history]);
 
+  const foodMap = useMemo(() => new Map(foods.map((f) => [f.id, f])), [foods]);
+  const mealKcal = Math.round(sumEntries(meals, foodMap).kcal);
+  const sleepMin = sleepMinutes(bed, wake);
+
+  const weightDelta =
+    weightKg != null && prevWeight ? convert(weightKg, "kg", displayUnit) - convert(prevWeight.kg, "kg", displayUnit) : null;
+
   if (loading) {
     return <div className="flex min-h-dvh items-center justify-center text-zinc-400">Loading…</div>;
   }
@@ -282,110 +484,179 @@ export default function DayPage() {
         <UnitToggle unit={displayUnit} onChange={setDisplayUnit} />
       </header>
 
-      {/* workout type */}
-      <section className="mb-4">
-        <h2 className="mb-2 text-sm font-medium text-zinc-500">Workout type</h2>
-        <div className="grid grid-cols-3 gap-2 sm:grid-cols-6">
-          {WORKOUT_TYPES.map((w) => (
-            <button
-              key={w.value}
-              onClick={() => pickType(w.value)}
-              className={`rounded-lg border px-2 py-2.5 text-sm font-medium transition ${
-                type === w.value ? `${w.color} border-transparent text-white` : "border-zinc-300 bg-white text-zinc-700 hover:bg-zinc-50"
-              }`}
-            >
-              {w.label}
-            </button>
-          ))}
+      {/* morning weight */}
+      <section className="mb-4 flex items-center gap-3 rounded-xl border border-zinc-200 bg-white px-3 py-2.5">
+        <div className="min-w-0 flex-1">
+          <div className="text-sm font-medium">Morning weight</div>
+          {prevWeight && (
+            <div className="text-xs text-zinc-500">
+              Last: {round2(convert(prevWeight.kg, "kg", displayUnit)).toFixed(1)} {displayUnit} (
+              {parseISODate(prevWeight.date).toLocaleDateString(undefined, { month: "short", day: "numeric" })})
+              {weightDelta != null && Math.abs(weightDelta) >= 0.05 && (
+                <span className={`ml-1 font-medium ${weightDelta < 0 ? "text-emerald-600" : "text-rose-600"}`}>
+                  {weightDelta > 0 ? "+" : "−"}
+                  {Math.abs(weightDelta).toFixed(1)}
+                </span>
+              )}
+            </div>
+          )}
         </div>
+        <div className="w-24">
+          <NumInput value={weightShown} onChange={setWeightShown} decimal placeholder="–" ariaLabel="Morning weight" />
+        </div>
+        <span className="w-5 text-sm text-zinc-500">{displayUnit}</span>
       </section>
 
-      {/* day totals */}
-      <section className="mb-5 grid grid-cols-3 gap-2 text-center">
-        <Total label={`Volume (${displayUnit})`} value={formatNumber(totals.volume)} />
-        <Total label="Working sets" value={String(totals.sets)} />
-        <Total
-          label="Core"
-          value={totals.coreSets ? `${totals.coreSets} sets${totals.coreSeconds ? ` · ${formatSeconds(totals.coreSeconds)}` : ""}` : "–"}
-        />
-      </section>
+      {/* tabs */}
+      <nav className="mb-4 grid grid-cols-3 gap-1 rounded-lg bg-zinc-200 p-1 text-sm font-medium">
+        {TABS.map((t) => {
+          const badge =
+            t.value === "workout"
+              ? info?.short ?? (items.length ? "✓" : "")
+              : t.value === "meals"
+                ? mealKcal
+                  ? `${mealKcal} kcal`
+                  : ""
+                : sleepMin != null
+                  ? formatDuration(sleepMin)
+                  : "";
+          const partDirty = t.value === "workout" ? dirtyParts.workout : t.value === "meals" ? dirtyParts.meals : false;
+          return (
+            <button
+              key={t.value}
+              type="button"
+              onClick={() => pickTab(t.value)}
+              className={`rounded-md px-2 py-2 transition ${tab === t.value ? "bg-white shadow-sm" : "text-zinc-600 hover:text-zinc-900"}`}
+            >
+              {t.label}
+              {partDirty && <span className="ml-1 text-amber-600">•</span>}
+              {badge && <span className="block text-[10px] font-normal text-zinc-500">{badge}</span>}
+            </button>
+          );
+        })}
+      </nav>
 
-      {/* main workout */}
-      {showMain && (
-        <section className="mb-8">
-          <h2 className="mb-2 flex items-center gap-2 text-lg font-semibold">
-            {info && type !== "rest" && <span className={`h-3 w-3 rounded-sm ${info.color}`} />}
-            {info && type !== "rest" ? `${info.label} workout` : "Workout"}
-          </h2>
+      {tab === "workout" && (
+        <>
+          {/* workout type */}
+          <section className="mb-4">
+            <h2 className="mb-2 text-sm font-medium text-zinc-500">Workout type</h2>
+            <div className="grid grid-cols-3 gap-2 sm:grid-cols-6">
+              {WORKOUT_TYPES.map((w) => (
+                <button
+                  key={w.value}
+                  onClick={() => pickType(w.value)}
+                  className={`rounded-lg border px-2 py-2.5 text-sm font-medium transition ${
+                    type === w.value ? `${w.color} border-transparent text-white` : "border-zinc-300 bg-white text-zinc-700 hover:bg-zinc-50"
+                  }`}
+                >
+                  {w.label}
+                </button>
+              ))}
+            </div>
+          </section>
 
-          {type && type !== "rest" && (
-            <ExercisePicker
-              title={`From previous ${info?.label} days`}
-              candidates={mainCandidates}
-              allNames={allNames}
-              defaultOpen={mainItems.length === 0}
-              onAdd={(names) => addExercises(names, "main")}
-              onAddNew={(name, unit) => addExercises([name], "main", { unit, mode: "reps" })}
+          {/* day totals */}
+          <section className="mb-5 grid grid-cols-3 gap-2 text-center">
+            <Total label={`Volume (${displayUnit})`} value={formatNumber(totals.volume)} />
+            <Total label="Working sets" value={String(totals.sets)} />
+            <Total
+              label="Core"
+              value={totals.coreSets ? `${totals.coreSets} sets${totals.coreSeconds ? ` · ${formatSeconds(totals.coreSeconds)}` : ""}` : "–"}
             />
+          </section>
+
+          {/* main workout */}
+          {showMain && (
+            <section className="mb-8">
+              <h2 className="mb-2 flex items-center gap-2 text-lg font-semibold">
+                {info && type !== "rest" && <span className={`h-3 w-3 rounded-sm ${info.color}`} />}
+                {info && type !== "rest" ? `${info.label} workout` : "Workout"}
+              </h2>
+
+              {type && type !== "rest" && (
+                <ExercisePicker
+                  title={`From previous ${info?.label} days`}
+                  candidates={mainCandidates}
+                  allNames={allNames}
+                  defaultOpen={mainItems.length === 0}
+                  onAdd={(names) => addExercises(names, "main")}
+                  onAddNew={(name, unit) => addExercises([name], "main", { unit, mode: "reps" })}
+                />
+              )}
+
+              <div className="mt-3 space-y-3">
+                {mainItems.map((it, idx) => (
+                  <ExerciseCard
+                    key={it.key}
+                    entry={it}
+                    last={historyByName.get(it.name.toLowerCase())?.last ?? null}
+                    displayUnit={displayUnit}
+                    onChange={(n) => updateItem(it.key, n)}
+                    onRemove={() => removeItem(it.key)}
+                    onMove={(d) => moveItem(it.key, d)}
+                    isFirst={idx === 0}
+                    isLast={idx === mainItems.length - 1}
+                  />
+                ))}
+              </div>
+            </section>
           )}
 
-          <div className="mt-3 space-y-3">
-            {mainItems.map((it, idx) => (
-              <ExerciseCard
-                key={it.key}
-                entry={it}
-                last={historyByName.get(it.name.toLowerCase())?.last ?? null}
-                displayUnit={displayUnit}
-                onChange={(n) => updateItem(it.key, n)}
-                onRemove={() => removeItem(it.key)}
-                onMove={(d) => moveItem(it.key, d)}
-                isFirst={idx === 0}
-                isLast={idx === mainItems.length - 1}
-              />
-            ))}
-          </div>
-        </section>
-      )}
-
-      {/* core */}
-      <section className="mb-8">
-        <h2 className="mb-2 flex items-center gap-2 text-lg font-semibold">
-          <span className="rounded bg-teal-100 px-1.5 text-xs font-bold text-teal-700">CORE</span> Core session
-        </h2>
-        <ExercisePicker
-          title="Previous core exercises"
-          candidates={coreCandidates}
-          allNames={allNames}
-          defaultOpen={false}
-          allowMode
-          onAdd={(names) => addExercises(names, "core")}
-          onAddNew={(name, unit, mode) => addExercises([name], "core", { unit, mode })}
-        />
-        <div className="mt-3 space-y-3">
-          {coreItems.map((it, idx) => (
-            <ExerciseCard
-              key={it.key}
-              entry={it}
-              last={historyByName.get(it.name.toLowerCase())?.last ?? null}
-              displayUnit={displayUnit}
+          {/* core */}
+          <section className="mb-8">
+            <h2 className="mb-2 flex items-center gap-2 text-lg font-semibold">
+              <span className="rounded bg-teal-100 px-1.5 text-xs font-bold text-teal-700">CORE</span> Core session
+            </h2>
+            <ExercisePicker
+              title="Previous core exercises"
+              candidates={coreCandidates}
+              allNames={allNames}
+              defaultOpen={false}
               allowMode
-              onChange={(n) => updateItem(it.key, n)}
-              onRemove={() => removeItem(it.key)}
-              onMove={(d) => moveItem(it.key, d)}
-              isFirst={idx === 0}
-              isLast={idx === coreItems.length - 1}
+              onAdd={(names) => addExercises(names, "core")}
+              onAddNew={(name, unit, mode) => addExercises([name], "core", { unit, mode })}
             />
-          ))}
-        </div>
-      </section>
+            <div className="mt-3 space-y-3">
+              {coreItems.map((it, idx) => (
+                <ExerciseCard
+                  key={it.key}
+                  entry={it}
+                  last={historyByName.get(it.name.toLowerCase())?.last ?? null}
+                  displayUnit={displayUnit}
+                  allowMode
+                  onChange={(n) => updateItem(it.key, n)}
+                  onRemove={() => removeItem(it.key)}
+                  onMove={(d) => moveItem(it.key, d)}
+                  isFirst={idx === 0}
+                  isLast={idx === coreItems.length - 1}
+                />
+              ))}
+            </div>
+          </section>
 
-      {(type || items.length > 0) && (
-        <div className="text-center">
-          <button onClick={clearDay} className="text-sm text-red-600 hover:underline">
-            Clear this day
-          </button>
-        </div>
+          {(type || items.length > 0) && (
+            <div className="text-center">
+              <button onClick={clearWorkout} className="text-sm text-red-600 hover:underline">
+                Clear workout
+              </button>
+            </div>
+          )}
+        </>
       )}
+
+      {tab === "meals" && (
+        <MealsTab
+          foods={foods}
+          items={meals}
+          previousDate={previousMealDate}
+          onChange={changeMeals}
+          onFoodSaved={onFoodSaved}
+          onCopyPrevious={copyPreviousMeals}
+        />
+      )}
+
+      {tab === "sleep" && <SleepTab bed={bed} wake={wake} recent={recentSleep} onChange={changeSleep} />}
 
       {/* sticky save bar */}
       <div className="fixed inset-x-0 bottom-0 border-t border-zinc-200 bg-white/95 px-3 py-3 backdrop-blur">
@@ -394,7 +665,7 @@ export default function DayPage() {
             {message ? message.text : dirty ? "Unsaved changes" : "All changes saved"}
           </span>
           <button
-            onClick={() => save()}
+            onClick={save}
             disabled={saving || !dirty}
             className="rounded-lg bg-zinc-900 px-6 py-3 font-medium text-white disabled:opacity-40"
           >

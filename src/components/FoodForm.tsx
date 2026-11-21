@@ -1,0 +1,127 @@
+"use client";
+
+import { useId, useState } from "react";
+import NumInput from "./NumInput";
+import { supabase } from "@/lib/supabase";
+import { BASE_UNITS, Food, fmt1, toFood } from "@/lib/nutrition";
+
+/** Create a new food (from its label) or edit an existing one. Saves straight to the database. */
+export default function FoodForm({
+  initial,
+  initialName,
+  onSaved,
+  onCancel,
+}: {
+  initial?: Food;
+  initialName?: string;
+  onSaved: (food: Food) => void;
+  onCancel: () => void;
+}) {
+  const [name, setName] = useState(initial?.name ?? initialName ?? "");
+  const [baseAmount, setBaseAmount] = useState<number | null>(initial?.base_amount ?? 100);
+  const [baseUnit, setBaseUnit] = useState(initial?.base_unit ?? "g");
+  const [calories, setCalories] = useState<number | null>(initial?.calories ?? null);
+  const [protein, setProtein] = useState<number | null>(initial?.protein ?? null);
+  const [carbs, setCarbs] = useState<number | null>(initial?.carbs ?? null);
+  const [fat, setFat] = useState<number | null>(initial?.fat ?? null);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const unitList = useId();
+
+  const autoKcal = (protein ?? 0) * 4 + (carbs ?? 0) * 4 + (fat ?? 0) * 9;
+  const canSave = name.trim() && baseAmount && baseAmount > 0 && baseUnit.trim();
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!canSave) return;
+    setSaving(true);
+    setError(null);
+    const row = {
+      name: name.trim(),
+      base_amount: baseAmount,
+      base_unit: baseUnit.trim(),
+      calories,
+      protein: protein ?? 0,
+      carbs: carbs ?? 0,
+      fat: fat ?? 0,
+    };
+    const sb = supabase().from("foods");
+    const { data, error } = initial
+      ? await sb.update(row).eq("id", initial.id).select().single()
+      : await sb.insert(row).select().single();
+    setSaving(false);
+    if (error) {
+      setError(error.code === "23505" ? "You already have a food with that name." : error.message);
+      return;
+    }
+    onSaved(toFood(data));
+  };
+
+  return (
+    <form onSubmit={submit} className="space-y-3 rounded-lg border border-zinc-200 bg-zinc-50 p-3">
+      <div className="text-xs font-medium uppercase tracking-wide text-zinc-500">
+        {initial ? "Edit food" : "New food"} <span className="normal-case tracking-normal text-zinc-400">· copy the numbers from the label</span>
+      </div>
+      <input
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+        placeholder="Food name, e.g. Chicken breast (cooked)"
+        className="w-full rounded-md border border-zinc-300 bg-white px-2 py-2 text-base outline-none focus:border-zinc-900"
+      />
+      <div>
+        <span className="mb-1 block text-xs text-zinc-500">Nutrition values are per</span>
+        <div className="flex gap-2">
+          <div className="w-24">
+            <NumInput value={baseAmount} onChange={setBaseAmount} decimal ariaLabel="Amount" />
+          </div>
+          <input
+            list={unitList}
+            value={baseUnit}
+            onChange={(e) => setBaseUnit(e.target.value)}
+            placeholder="g, ml, piece…"
+            className="min-w-0 flex-1 rounded-md border border-zinc-300 bg-white px-2 py-2 text-base outline-none focus:border-zinc-900"
+          />
+          <datalist id={unitList}>
+            {BASE_UNITS.map((u) => (
+              <option key={u} value={u} />
+            ))}
+          </datalist>
+        </div>
+      </div>
+      <div className="grid grid-cols-4 gap-2 text-center">
+        <Field label="Protein g">
+          <NumInput value={protein} onChange={setProtein} decimal ariaLabel="Protein" />
+        </Field>
+        <Field label="Carbs g">
+          <NumInput value={carbs} onChange={setCarbs} decimal ariaLabel="Carbs" />
+        </Field>
+        <Field label="Fat g">
+          <NumInput value={fat} onChange={setFat} decimal ariaLabel="Fat" />
+        </Field>
+        <Field label="kcal">
+          <NumInput value={calories} onChange={setCalories} decimal placeholder={fmt1(autoKcal)} ariaLabel="Calories" />
+        </Field>
+      </div>
+      <p className="text-[11px] text-zinc-500">Leave kcal empty to calculate it from the macros (4 / 4 / 9 kcal per gram).</p>
+      {error && <p className="text-sm text-red-600">{error}</p>}
+      <div className="flex justify-end gap-2">
+        <button type="button" onClick={onCancel} className="rounded-md px-3 py-2 text-sm text-zinc-600 hover:bg-zinc-200">
+          Cancel
+        </button>
+        <button type="submit" disabled={!canSave || saving} className="rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white disabled:opacity-30">
+          {saving ? "Saving…" : initial ? "Save food" : "Create & add"}
+        </button>
+      </div>
+    </form>
+  );
+}
+
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <label className="block">
+      <span className="mb-1 block text-[11px] text-zinc-500">{label}</span>
+      {children}
+    </label>
+  );
+}
+

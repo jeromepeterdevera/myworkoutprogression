@@ -11,8 +11,16 @@ This is a calendar workout log built with Next.js and Supabase, and it deploys t
   - Each set takes its own reps and weight. Units are switchable per exercise (kg/lb). Totals convert to the unit picked in the header.
   - A separate **Core session** is available on every day, including Rest days. Sets can be reps × weight or timed (seconds).
   - Exercise history is shared across workout types. For example, Bench Press on an Upper day shows your last Push-day Bench numbers.
+- **Morning weight:** log it at the top of any day. It shows the change since your last weigh-in and follows the kg/lb toggle.
+- **Meals tab:** add foods to Breakfast, Lunch, Dinner and Snacks. The first time you use a food, enter its macros from the label (e.g. per 100 g, or per 1 egg). After that, pick it from your list and type the amount; calories, protein, carbs and fat are calculated per meal and for the day. You can copy meals from the previous logged day.
+- **Sleep tab:** enter when you went to bed (and stopped doing anything) and when you woke up. It shows hours slept, sleep cycles, your 7-night average, how you did against your sleep goal, and when to go to bed tonight.
+- **Calendar views:** switch between Workout, Weight, Meals (kcal/protein) and Sleep, each with its own monthly stats.
 
 ---
+
+## Updating an existing install
+
+When `supabase/schema.sql` changes, paste the whole file into the Supabase **SQL Editor** and click **Run** again. It is safe to re-run and won't touch your existing data.
 
 ## Setup (about 15 minutes, one time only)
 
