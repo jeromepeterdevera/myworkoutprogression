@@ -59,7 +59,12 @@ create policy "own day exercises" on public.day_exercises
 -- Saves a whole day in one transaction.
 -- p_items: [{ "name": "Bench Press", "section": "main", "unit": "kg", "mode": "reps",
 --             "sets": [{ "reps": 10, "weight": 40, "seconds": null }] }]
-create or replace function public.save_day(p_date date, p_type text, p_items jsonb)
+-- Weight-training duration in minutes (optional; used for the calorie-burn estimate)
+alter table public.workout_days add column if not exists duration_min numeric check (duration_min > 0);
+
+-- (older versions of this function had 3 parameters)
+drop function if exists public.save_day(date, text, jsonb);
+create or replace function public.save_day(p_date date, p_type text, p_items jsonb, p_duration_min numeric default null)
 returns void
 language plpgsql
 security invoker
@@ -75,14 +80,15 @@ begin
     raise exception 'not signed in';
   end if;
 
-  if p_type is null and jsonb_array_length(coalesce(p_items, '[]'::jsonb)) = 0 then
+  if p_type is null and p_duration_min is null and jsonb_array_length(coalesce(p_items, '[]'::jsonb)) = 0 then
     delete from public.workout_days where user_id = auth.uid() and date = p_date;
     return;
   end if;
 
-  insert into public.workout_days (user_id, date, type, updated_at)
-  values (auth.uid(), p_date, p_type, now())
-  on conflict (user_id, date) do update set type = excluded.type, updated_at = now()
+  insert into public.workout_days (user_id, date, type, duration_min, updated_at)
+  values (auth.uid(), p_date, p_type, p_duration_min, now())
+  on conflict (user_id, date) do update
+    set type = excluded.type, duration_min = excluded.duration_min, updated_at = now()
   returning id into v_day_id;
 
   delete from public.day_exercises where day_id = v_day_id;
@@ -114,7 +120,7 @@ begin
 end;
 $$;
 
-grant execute on function public.save_day(date, text, jsonb) to authenticated;
+grant execute on function public.save_day(date, text, jsonb, numeric) to authenticated;
 
 -- ============================================================
 -- Daily log (morning weight + last night's sleep), foods and meals
@@ -233,3 +239,102 @@ $$;
 
 grant execute on function public.save_daily_log(date, numeric, time, time) to authenticated;
 grant execute on function public.save_meals(date, jsonb) to authenticated;
+
+-- ============================================================
+-- Sports, runs and profile (for calorie-burn estimates)
+-- ============================================================
+
+create table if not exists public.sport_sessions (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null default auth.uid() references auth.users(id) on delete cascade,
+  date date not null,
+  position int not null default 0,
+  sport text not null,
+  minutes numeric not null check (minutes > 0),
+  intensity text not null default 'moderate' check (intensity in ('light','moderate','vigorous')),
+  -- sets: [{ "us": 21, "them": 18 }, ...]
+  sets jsonb not null default '[]'::jsonb
+);
+create index if not exists sport_sessions_user_date_idx on public.sport_sessions (user_id, date);
+
+create table if not exists public.runs (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null default auth.uid() references auth.users(id) on delete cascade,
+  date date not null,
+  position int not null default 0,
+  seconds int not null check (seconds > 0),
+  distance numeric check (distance > 0),
+  distance_unit text not null default 'km' check (distance_unit in ('km','mi'))
+);
+create index if not exists runs_user_date_idx on public.runs (user_id, date);
+
+create table if not exists public.profiles (
+  user_id uuid primary key default auth.uid() references auth.users(id) on delete cascade,
+  sex text check (sex in ('male','female')),
+  birth_year int check (birth_year between 1900 and 2100),
+  height_cm numeric check (height_cm > 0),
+  activity_factor numeric not null default 1.2 check (activity_factor between 1 and 2.5),
+  updated_at timestamptz not null default now()
+);
+
+grant select, insert, update, delete on public.sport_sessions, public.runs, public.profiles to authenticated;
+
+alter table public.sport_sessions enable row level security;
+alter table public.runs enable row level security;
+alter table public.profiles enable row level security;
+
+drop policy if exists "own sport sessions" on public.sport_sessions;
+create policy "own sport sessions" on public.sport_sessions
+  for all using (user_id = auth.uid()) with check (user_id = auth.uid());
+
+drop policy if exists "own runs" on public.runs;
+create policy "own runs" on public.runs
+  for all using (user_id = auth.uid()) with check (user_id = auth.uid());
+
+drop policy if exists "own profile" on public.profiles;
+create policy "own profile" on public.profiles
+  for all using (user_id = auth.uid()) with check (user_id = auth.uid());
+
+-- Replaces all sports and runs for a day in one transaction.
+-- p_sports: [{ "sport": "Tennis", "minutes": 60, "intensity": "moderate", "sets": [{ "us": 6, "them": 4 }] }]
+-- p_runs:   [{ "seconds": 1800, "distance": 5, "distance_unit": "km" }]
+create or replace function public.save_activities(p_date date, p_sports jsonb, p_runs jsonb)
+returns void
+language plpgsql
+security invoker
+as $$
+declare
+  v_item jsonb;
+  v_pos int := 0;
+begin
+  if auth.uid() is null then
+    raise exception 'not signed in';
+  end if;
+
+  delete from public.sport_sessions where user_id = auth.uid() and date = p_date;
+  delete from public.runs where user_id = auth.uid() and date = p_date;
+
+  for v_item in select * from jsonb_array_elements(coalesce(p_sports, '[]'::jsonb)) loop
+    if coalesce(btrim(v_item->>'sport'), '') = '' or coalesce((v_item->>'minutes')::numeric, 0) <= 0 then
+      continue;
+    end if;
+    insert into public.sport_sessions (user_id, date, position, sport, minutes, intensity, sets)
+    values (auth.uid(), p_date, v_pos, btrim(v_item->>'sport'), (v_item->>'minutes')::numeric,
+            coalesce(v_item->>'intensity', 'moderate'), coalesce(v_item->'sets', '[]'::jsonb));
+    v_pos := v_pos + 1;
+  end loop;
+
+  v_pos := 0;
+  for v_item in select * from jsonb_array_elements(coalesce(p_runs, '[]'::jsonb)) loop
+    if coalesce((v_item->>'seconds')::int, 0) <= 0 then
+      continue;
+    end if;
+    insert into public.runs (user_id, date, position, seconds, distance, distance_unit)
+    values (auth.uid(), p_date, v_pos, (v_item->>'seconds')::int, nullif(v_item->>'distance', '')::numeric,
+            coalesce(v_item->>'distance_unit', 'km'));
+    v_pos := v_pos + 1;
+  end loop;
+end;
+$$;
+
+grant execute on function public.save_activities(date, jsonb, jsonb) to authenticated;

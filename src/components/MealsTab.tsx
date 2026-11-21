@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useMemo, useState } from "react";
 import NumInput from "./NumInput";
 import FoodForm from "./FoodForm";
@@ -13,6 +14,7 @@ export default function MealsTab({
   onChange,
   onFoodSaved,
   onCopyPrevious,
+  burn,
 }: {
   foods: Food[];
   items: MealEntry[];
@@ -20,6 +22,8 @@ export default function MealsTab({
   onChange: (items: MealEntry[]) => void;
   onFoodSaved: (food: Food) => void;
   onCopyPrevious: () => void;
+  /** estimated calories burned today: baseline (null without a profile) and workouts */
+  burn: { baseline: number | null; exercise: number };
 }) {
   const [adding, setAdding] = useState<Meal | null>(null);
   const [editing, setEditing] = useState<string | null>(null); // food id
@@ -36,6 +40,7 @@ export default function MealsTab({
   return (
     <div>
       <MacroSummary m={total} big />
+      <BalanceCard intake={total.kcal} burn={burn} hasItems={items.length > 0} />
 
       {items.length === 0 && previousDate && (
         <button
@@ -219,6 +224,48 @@ function Box({ label, value }: { label: string; value: string }) {
     <div className="rounded-lg border border-zinc-200 bg-white px-1 py-2">
       <div className="text-base font-semibold sm:text-lg">{value}</div>
       <div className="text-[10px] text-zinc-500 sm:text-[11px]">{label}</div>
+    </div>
+  );
+}
+
+function BalanceCard({
+  intake,
+  burn,
+  hasItems,
+}: {
+  intake: number;
+  burn: { baseline: number | null; exercise: number };
+  hasItems: boolean;
+}) {
+  if (burn.baseline == null) {
+    return (
+      <p className="mb-4 rounded-lg bg-zinc-100 px-3 py-2 text-xs text-zinc-600">
+        To see your calorie surplus or deficit, fill in your{" "}
+        <Link href="/profile" className="font-medium underline">
+          profile
+        </Link>{" "}
+        (sex, birth year, height).
+      </p>
+    );
+  }
+  const out = burn.baseline + burn.exercise;
+  const balance = intake - out;
+  return (
+    <div className="mb-4 rounded-xl border border-zinc-200 bg-white px-3 py-2.5 text-sm">
+      <div className="flex items-baseline justify-between">
+        <span className="font-medium">Calorie balance</span>
+        {hasItems ? (
+          <span className={`text-lg font-semibold ${balance > 0 ? "text-red-600" : "text-blue-600"}`}>
+            {balance > 0 ? "+" : "−"}
+            {Math.abs(Math.round(balance))} kcal {balance > 0 ? "surplus" : "deficit"}
+          </span>
+        ) : (
+          <span className="text-zinc-400">log meals to see it</span>
+        )}
+      </div>
+      <div className="mt-0.5 text-xs text-zinc-500">
+        Eaten {Math.round(intake)} − burned ≈ {Math.round(out)} (body {Math.round(burn.baseline)} + workouts {Math.round(burn.exercise)})
+      </div>
     </div>
   );
 }

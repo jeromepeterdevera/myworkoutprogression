@@ -2,46 +2,19 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
-import { supabase } from "@/lib/supabase";
 import UnitToggle from "@/components/UnitToggle";
-import { signOut } from "@/lib/useAuth";
+import AppNav from "@/components/AppNav";
 import { useDisplayUnit } from "@/lib/useDisplayUnit";
-import { fmt1, macrosFor, toFood } from "@/lib/nutrition";
-import { formatDuration, sleepMinutes } from "@/lib/sleep";
-import {
-  DayExerciseRow,
-  WORKOUT_TYPES,
-  WorkoutType,
-  convert,
-  dayTotals,
-  formatNumber,
-  toISODate,
-  typeInfo,
-} from "@/lib/workout";
+import { formatDuration } from "@/lib/sleep";
+import { KM_PER_MI, profileComplete } from "@/lib/activity";
+import { DaySummary, loadRange } from "@/lib/daily";
+import { WORKOUT_TYPES, convert, dayTotals, formatNumber, toISODate, typeInfo } from "@/lib/workout";
 
-interface DayRow {
-  date: string;
-  type: WorkoutType | null;
-  day_exercises: DayExerciseRow[];
-}
-
-interface LogRow {
-  date: string;
-  weight_kg: number | null;
-  bed_time: string | null;
-  wake_time: string | null;
-}
-
-interface MealSum {
-  kcal: number;
-  protein: number;
-}
-
-type View = "workout" | "weight" | "meals" | "sleep";
+type View = "workout" | "weight" | "calories" | "sleep";
 const VIEWS: { value: View; label: string }[] = [
   { value: "workout", label: "Workout" },
   { value: "weight", label: "Weight" },
-  { value: "meals", label: "Meals" },
+  { value: "calories", label: "Calories" },
   { value: "sleep", label: "Sleep" },
 ];
 
@@ -49,14 +22,15 @@ const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const MONTH_KEY = "calendar-month";
 const VIEW_KEY = "calendar-view";
 
+const signed = (n: number) => `${n > 0 ? "+" : n < 0 ? "−" : ""}${Math.abs(Math.round(n)).toLocaleString()}`;
+
 export default function CalendarPage() {
   const [month, setMonth] = useState(() => {
     const d = new Date();
     return new Date(d.getFullYear(), d.getMonth(), 1);
   });
-  const [days, setDays] = useState<Record<string, DayRow>>({});
-  const [logs, setLogs] = useState<Record<string, LogRow>>({});
-  const [mealSums, setMealSums] = useState<Record<string, MealSum>>({});
+  const [days, setDays] = useState<Record<string, DaySummary>>({});
+  const [hasProfile, setHasProfile] = useState(true);
   const [view, setView] = useState<View>("workout");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -71,7 +45,8 @@ export default function CalendarPage() {
         setMonth(new Date(y, m - 1, 1));
       }
       const v = sessionStorage.getItem(VIEW_KEY);
-      if (VIEWS.some((x) => x.value === v)) setView(v as View);
+      if (v === "meals") setView("calories");
+      else if (VIEWS.some((x) => x.value === v)) setView(v as View);
     } catch {}
   }, []);
 
@@ -103,38 +78,11 @@ export default function CalendarPage() {
     let cancelled = false;
     setLoading(true);
     setError(null);
-    const from = toISODate(grid[0]);
-    const to = toISODate(grid[grid.length - 1]);
-    const sb = supabase();
-    Promise.all([
-      sb.from("workout_days").select("date, type, day_exercises(section, unit, mode, sets)").gte("date", from).lte("date", to),
-      sb.from("daily_logs").select("date, weight_kg, bed_time, wake_time").gte("date", from).lte("date", to),
-      sb.from("meal_items").select("date, quantity, foods(*)").gte("date", from).lte("date", to),
-    ]).then(([w, l, m]) => {
+    loadRange(toISODate(grid[0]), toISODate(grid[grid.length - 1])).then((res) => {
       if (cancelled) return;
-      const err = w.error ?? l.error ?? m.error;
-      if (err) setError(err.message);
-
-      const dayMap: Record<string, DayRow> = {};
-      for (const r of (w.data ?? []) as DayRow[]) dayMap[r.date] = r;
-      setDays(dayMap);
-
-      const logMap: Record<string, LogRow> = {};
-      for (const r of (l.data ?? []) as LogRow[]) {
-        logMap[r.date] = { ...r, weight_kg: r.weight_kg == null ? null : Number(r.weight_kg) };
-      }
-      setLogs(logMap);
-
-      const sums: Record<string, MealSum> = {};
-      type MealJoin = { date: string; quantity: number; foods: Record<string, unknown> | null };
-      for (const r of (m.data ?? []) as unknown as MealJoin[]) {
-        if (!r.foods) continue;
-        const mm = macrosFor(toFood(r.foods), Number(r.quantity));
-        const cur = (sums[r.date] ??= { kcal: 0, protein: 0 });
-        cur.kcal += mm.kcal;
-        cur.protein += mm.protein;
-      }
-      setMealSums(sums);
+      setError(res.error);
+      setDays(res.days);
+      setHasProfile(profileComplete(res.profile));
       setLoading(false);
     });
     return () => {
@@ -144,19 +92,16 @@ export default function CalendarPage() {
 
   const todayISO = toISODate(new Date());
   const monthPrefix = `${month.getFullYear()}-${String(month.getMonth() + 1).padStart(2, "0")}`;
+  const distUnit = unit === "lb" ? "mi" : "km";
 
   const stats = useMemo((): { label: string; value: string }[] => {
-    const inMonth = <T,>(rec: Record<string, T>) =>
-      Object.entries(rec)
-        .filter(([d]) => d.startsWith(monthPrefix))
-        .sort(([a], [b]) => a.localeCompare(b))
-        .map(([, v]) => v);
+    const inMonth = Object.values(days)
+      .filter((d) => d.date.startsWith(monthPrefix))
+      .sort((a, b) => a.date.localeCompare(b.date));
+    const avg = (xs: number[]) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null);
 
     if (view === "weight") {
-      const ws = inMonth(logs)
-        .map((l) => l.weight_kg)
-        .filter((w): w is number => w != null)
-        .map((w) => convert(w, "kg", unit));
+      const ws = inMonth.flatMap((d) => (d.weightKg != null ? [convert(d.weightKg, "kg", unit)] : []));
       const change = ws.length > 1 ? ws[ws.length - 1] - ws[0] : null;
       return [
         { label: `Latest (${unit})`, value: ws.length ? ws[ws.length - 1].toFixed(1) : "–" },
@@ -168,24 +113,26 @@ export default function CalendarPage() {
       ];
     }
 
-    if (view === "meals") {
-      const ms = inMonth(mealSums);
-      const avg = (f: (m: MealSum) => number) => (ms.length ? ms.reduce((a, m) => a + f(m), 0) / ms.length : null);
-      const k = avg((m) => m.kcal);
-      const p = avg((m) => m.protein);
+    if (view === "calories") {
+      const eaten = avg(inMonth.flatMap((d) => (d.intake != null ? [d.intake] : [])));
+      const bal = inMonth.flatMap((d) => (d.balance != null ? [d.balance] : []));
+      const avgBal = avg(bal);
+      const workoutBurn = avg(inMonth.filter((d) => d.exerciseKcal > 0).map((d) => d.exerciseKcal));
       return [
-        { label: "Avg kcal / day", value: k == null ? "–" : String(Math.round(k)) },
-        { label: "Avg protein / day", value: p == null ? "–" : `${Math.round(p)} g` },
-        { label: "Days logged", value: String(ms.length) },
+        { label: "Avg eaten / day", value: eaten == null ? "–" : Math.round(eaten).toLocaleString() },
+        { label: "Avg workout burn", value: workoutBurn == null ? "–" : Math.round(workoutBurn).toLocaleString() },
+        {
+          label: avgBal == null ? "Avg balance" : avgBal > 0 ? "Avg surplus" : "Avg deficit",
+          value: avgBal == null ? "–" : signed(avgBal),
+        },
       ];
     }
 
     if (view === "sleep") {
-      const ss = inMonth(logs)
-        .map((l) => sleepMinutes(l.bed_time, l.wake_time))
-        .filter((m): m is number => m != null);
+      const ss = inMonth.flatMap((d) => (d.sleepMin != null ? [d.sleepMin] : []));
+      const a = avg(ss);
       return [
-        { label: "Avg sleep", value: ss.length ? formatDuration(ss.reduce((a, b) => a + b, 0) / ss.length) : "–" },
+        { label: "Avg sleep", value: a == null ? "–" : formatDuration(a) },
         { label: "Shortest", value: ss.length ? formatDuration(Math.min(...ss)) : "–" },
         { label: "Nights logged", value: String(ss.length) },
       ];
@@ -193,24 +140,26 @@ export default function CalendarPage() {
 
     let sessions = 0;
     let volume = 0;
-    let core = 0;
-    for (const d of inMonth(days)) {
-      const t = dayTotals(d.day_exercises, unit);
-      if (d.type && d.type !== "rest") sessions++;
-      if (t.coreSets > 0) core++;
+    let km = 0;
+    for (const d of inMonth) {
+      const t = dayTotals(d.exercises, unit);
+      if ((d.workoutType && d.workoutType !== "rest") || d.sports.length || d.runs.length) sessions++;
       volume += t.volume;
+      for (const r of d.runs) if (r.distance) km += r.unit === "mi" ? r.distance * KM_PER_MI : r.distance;
     }
     return [
-      { label: "Sessions", value: String(sessions) },
+      { label: "Active days", value: String(sessions) },
       { label: `Volume (${unit})`, value: formatNumber(volume) },
-      { label: "Core days", value: String(core) },
+      { label: `Run (${distUnit})`, value: km ? (distUnit === "mi" ? km / KM_PER_MI : km).toFixed(1) : "–" },
     ];
-  }, [view, days, logs, mealSums, monthPrefix, unit]);
+  }, [view, days, monthPrefix, unit, distUnit]);
 
   const shift = (n: number) => setMonth(new Date(month.getFullYear(), month.getMonth() + n, 1));
 
   return (
     <main className="mx-auto max-w-3xl px-3 pb-10 pt-4 sm:px-6">
+      <AppNav current="calendar" />
+
       <header className="mb-4 flex items-center justify-between gap-2">
         <div className="flex items-center gap-1">
           <button onClick={() => shift(-1)} className="rounded-md px-3 py-2 text-xl hover:bg-zinc-200" aria-label="Previous month">
@@ -223,12 +172,7 @@ export default function CalendarPage() {
             ›
           </button>
         </div>
-        <div className="flex items-center gap-2">
-          <UnitToggle unit={unit} onChange={setUnit} />
-          <button onClick={signOut} className="rounded-md px-2 py-1 text-sm text-zinc-500 hover:bg-zinc-200">
-            Sign out
-          </button>
-        </div>
+        <UnitToggle unit={unit} onChange={setUnit} />
       </header>
 
       <nav className="mb-3 grid grid-cols-4 gap-1 rounded-lg bg-zinc-200 p-1 text-sm font-medium">
@@ -250,6 +194,16 @@ export default function CalendarPage() {
         ))}
       </div>
 
+      {view === "calories" && !hasProfile && !loading && (
+        <p className="mb-3 rounded-lg bg-zinc-100 px-3 py-2 text-sm text-zinc-700">
+          Fill in your{" "}
+          <Link href="/profile" className="font-medium underline">
+            profile
+          </Link>{" "}
+          to see a daily surplus or deficit. Until then the calendar shows calories eaten.
+        </p>
+      )}
+
       {error && <p className="mb-2 rounded bg-red-100 p-2 text-sm text-red-700">{error}</p>}
 
       <div className="overflow-hidden rounded-xl border border-zinc-200 bg-white">
@@ -263,18 +217,20 @@ export default function CalendarPage() {
         <div className={`grid grid-cols-7 ${loading ? "opacity-60" : ""}`}>
           {grid.map((d) => {
             const iso = toISODate(d);
-            const row = days[iso];
+            const day = days[iso];
             const inMonth = d.getMonth() === month.getMonth();
-            const info = typeInfo(row?.type);
-            const t = row ? dayTotals(row.day_exercises, unit) : null;
-            const log = logs[iso];
-            const meal = mealSums[iso];
-            const sleep = log ? sleepMinutes(log.bed_time, log.wake_time) : null;
+            const info = typeInfo(day?.workoutType);
+            const t = day ? dayTotals(day.exercises, unit) : null;
+            const runDist = day?.runs.reduce((a, r) => {
+              if (!r.distance) return a;
+              const km = r.unit === "mi" ? r.distance * KM_PER_MI : r.distance;
+              return a + (distUnit === "mi" ? km / KM_PER_MI : km);
+            }, 0);
             return (
               <Link
                 key={iso}
                 href={`/day/${iso}`}
-                className={`flex min-h-[78px] flex-col gap-1 border-b border-r border-zinc-100 p-1 text-left transition hover:bg-zinc-50 sm:min-h-[96px] sm:p-1.5 ${
+                className={`flex min-h-[84px] min-w-0 flex-col gap-0.5 border-b border-r border-zinc-100 p-1 text-left transition hover:bg-zinc-50 sm:min-h-[100px] sm:p-1.5 ${
                   inMonth ? "" : "bg-zinc-50/70 text-zinc-400"
                 }`}
               >
@@ -293,11 +249,24 @@ export default function CalendarPage() {
                   )}
                 </div>
 
-                {view === "workout" && (
+                {view === "workout" && day && (
                   <>
                     {info && (
                       <span className={`truncate rounded px-1 text-[9px] font-bold text-white sm:text-[11px] ${info.color}`}>
                         {info.short}
+                      </span>
+                    )}
+                    {day.sports.length > 0 && (
+                      <span
+                        className="truncate rounded bg-fuchsia-600 px-1 text-[9px] font-bold text-white sm:text-[11px]"
+                        title={day.sports.join(", ")}
+                      >
+                        {day.sports.length > 1 ? `${day.sports.length} SPORTS` : day.sports[0].toUpperCase()}
+                      </span>
+                    )}
+                    {day.runs.length > 0 && (
+                      <span className="truncate rounded bg-lime-600 px-1 text-[9px] font-bold text-white sm:text-[11px]">
+                        RUN{runDist ? ` ${runDist.toFixed(1)}` : ""}
                       </span>
                     )}
                     {t && t.volume > 0 && (
@@ -306,39 +275,59 @@ export default function CalendarPage() {
                         <span className="hidden sm:inline"> {unit}</span>
                       </span>
                     )}
-                    {t && t.sets > 0 && (
-                      <span className="text-[9px] leading-tight text-zinc-500 sm:text-[11px]">{t.sets} sets</span>
+                    {day.exerciseKcal >= 1 && (
+                      <span className="text-[9px] leading-tight text-orange-700 sm:text-[11px]">
+                        {Math.round(day.exerciseKcal)}
+                        <span className="hidden sm:inline"> kcal</span>
+                      </span>
                     )}
                   </>
                 )}
 
-                {view === "weight" && log?.weight_kg != null && (
+                {view === "weight" && day?.weightKg != null && (
                   <span className="text-[11px] leading-tight text-zinc-800 sm:text-sm">
-                    <span className="font-semibold">{convert(log.weight_kg, "kg", unit).toFixed(1)}</span>
+                    <span className="font-semibold">{convert(day.weightKg, "kg", unit).toFixed(1)}</span>
                     <span className="hidden text-zinc-500 sm:inline"> {unit}</span>
                   </span>
                 )}
 
-                {view === "meals" && meal && (
+                {view === "calories" && day && (day.intake != null || day.exerciseKcal >= 1) && (
                   <>
-                    <span className="text-[11px] font-semibold leading-tight text-zinc-800 sm:text-sm">{Math.round(meal.kcal)}</span>
-                    <span className="text-[9px] leading-tight text-zinc-500 sm:text-[11px]">
-                      kcal<span className="hidden sm:inline"> · P {fmt1(meal.protein)}g</span>
-                    </span>
+                    {day.balance != null && (
+                      <span
+                        className={`self-start rounded px-1 text-[10px] font-semibold leading-tight sm:text-xs ${
+                          day.balance > 0 ? "bg-red-100 text-red-800" : "bg-blue-100 text-blue-800"
+                        }`}
+                        title={day.balance > 0 ? "Surplus" : "Deficit"}
+                      >
+                        {signed(day.balance)}
+                      </span>
+                    )}
+                    {day.intake != null && (
+                      <span className="text-[9px] leading-tight text-zinc-600 sm:text-[11px]">
+                        <span className="sm:hidden">{Math.round(day.intake)}</span>
+                        <span className="hidden sm:inline">eaten {Math.round(day.intake)}</span>
+                      </span>
+                    )}
+                    {day.exerciseKcal >= 1 && (
+                      <span className="hidden text-[11px] leading-tight text-orange-700 sm:inline">
+                        workout {Math.round(day.exerciseKcal)}
+                      </span>
+                    )}
                   </>
                 )}
 
-                {view === "sleep" && sleep != null && (
+                {view === "sleep" && day?.sleepMin != null && (
                   <span
                     className={`self-start rounded px-1 text-[10px] font-semibold leading-tight sm:text-xs ${
-                      sleep >= 420
+                      day.sleepMin >= 420
                         ? "bg-emerald-100 text-emerald-800"
-                        : sleep >= 360
+                        : day.sleepMin >= 360
                           ? "bg-amber-100 text-amber-800"
                           : "bg-rose-100 text-rose-800"
                     }`}
                   >
-                    {formatDuration(sleep)}
+                    {formatDuration(day.sleepMin)}
                   </span>
                 )}
               </Link>
@@ -356,8 +345,27 @@ export default function CalendarPage() {
             </span>
           ))}
           <span className="flex items-center gap-1">
+            <span className="h-2.5 w-2.5 rounded-sm bg-fuchsia-600" /> Sports
+          </span>
+          <span className="flex items-center gap-1">
+            <span className="h-2.5 w-2.5 rounded-sm bg-lime-600" /> Run ({distUnit})
+          </span>
+          <span className="flex items-center gap-1">
             <span className="rounded bg-teal-100 px-1 text-[9px] font-bold text-teal-700">CORE</span> Core done
           </span>
+          <span className="text-orange-700">Orange number = kcal burned by workouts</span>
+        </div>
+      )}
+
+      {view === "calories" && (
+        <div className="mt-3 flex flex-wrap gap-x-3 gap-y-1 text-xs text-zinc-600">
+          <span>
+            <span className="rounded bg-blue-100 px-1 text-blue-800">−</span> deficit
+          </span>
+          <span>
+            <span className="rounded bg-red-100 px-1 text-red-800">+</span> surplus
+          </span>
+          <span>Balance = eaten − (body burn + workouts). Shown on days you logged meals.</span>
         </div>
       )}
 

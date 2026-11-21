@@ -1,20 +1,42 @@
 # Workout Log
 
-This is a calendar workout log built with Next.js and Supabase, and it deploys to Vercel.
+This is a calendar log for workouts, meals, weight and sleep, built with Next.js and Supabase. It deploys to Vercel.
 
-- **Calendar view:** each day shows its workout type badge, total volume (sets × reps × weight), working sets, and a **CORE** tag on days you did core.
-- **Day page:**
-  - Pick the workout type: Push, Pull, Legs, Upper Body, Lower Body or Rest.
-  - Choosing a type lists **every exercise you've ever done on that type**, each with your most recent numbers. Tick the ones you're doing today and they're added, prefilled with last time's sets.
-  - Each exercise shows **Last** (date + sets), a per-set **Prev** column, and your volume vs last time (+/-).
-  - You can add brand-new exercises at any time. Past exercise names autocomplete.
-  - Each set takes its own reps and weight. Units are switchable per exercise (kg/lb). Totals convert to the unit picked in the header.
-  - A separate **Core session** is available on every day, including Rest days. Sets can be reps × weight or timed (seconds).
-  - Exercise history is shared across workout types. For example, Bench Press on an Upper day shows your last Push-day Bench numbers.
-- **Morning weight:** log it at the top of any day. It shows the change since your last weigh-in and follows the kg/lb toggle.
-- **Meals tab:** add foods to Breakfast, Lunch, Dinner and Snacks. The first time you use a food, enter its macros from the label (e.g. per 100 g, or per 1 egg). After that, pick it from your list and type the amount; calories, protein, carbs and fat are calculated per meal and for the day. You can copy meals from the previous logged day.
-- **Sleep tab:** enter when you went to bed (and stopped doing anything) and when you woke up. It shows hours slept, sleep cycles, your 7-night average, how you did against your sleep goal, and when to go to bed tonight.
-- **Calendar views:** switch between Workout, Weight, Meals (kcal/protein) and Sleep, each with its own monthly stats.
+- **Calendar:** switch between four views, each with its own monthly stats.
+  - **Workout:** weight-training type, sports and runs, volume, and calories burned by workouts.
+  - **Weight:** your morning weigh-ins.
+  - **Calories:** daily surplus or deficit, plus calories eaten.
+  - **Sleep:** hours slept, colour-coded.
+- **Day page:** morning weight at the top, then **Workout**, **Meals** and **Sleep** tabs. One Save button saves everything.
+- **Workout tab:** three sub-tabs, so you can log any mix of them on the same day. Each shows an estimate of calories burned.
+  - **Weight Training:**
+    - Pick the type: Push, Pull, Legs, Upper Body, Lower Body or Rest. Choosing a type lists every exercise you've done on that type, with your most recent numbers, ready to tick and add.
+    - Each exercise shows **Last** (date + sets), a per-set **Prev** column, and your volume vs last time.
+    - Units switch per exercise (kg/lb). There is a separate **Core session** where sets can be timed.
+    - Enter the **session length** for the calorie estimate. If you leave it blank, it's worked out from your sets (3 min per set).
+  - **Sports:** the sport, minutes played and intensity. You can also add set scores (yours vs opponent's) for sports scored in sets.
+  - **Running:** duration, plus distance if you have it. It shows pace and speed.
+- **Meals tab:** add foods to Breakfast, Lunch, Dinner and Snacks.
+  - The first time you use a food, enter its macros from the label (e.g. per 100 g, or per 1 egg). After that, pick it from your list and type the amount.
+  - Calories, protein, carbs and fat are calculated per meal and for the day, along with the day's calorie surplus or deficit.
+  - You can copy meals from the previous logged day.
+- **Sleep tab:** enter when you went to bed (and stopped doing anything) and when you woke up. It shows:
+  - hours slept and sleep cycles
+  - your 7-night average
+  - how you did against your sleep goal
+  - when to go to bed tonight
+- **Dashboard:** averages and charts for weight, sleep, calories eaten vs burned, daily balance and workout burn. Choose 7 days, 30 days, 90 days or 1 year. There's also a data table.
+- **Profile:** sex, birth year, height and day-to-day activity. These are used to estimate the calories your body burns outside workouts.
+
+### How calories burned are estimated
+- **Body (without workouts):** Mifflin–St Jeor BMR from your profile and latest weigh-in, × your activity level.
+- **Workouts:** MET values from the Compendium of Physical Activities. The formula is (MET − 1) × body weight (kg) × hours.
+  - Weight training uses 5 MET.
+  - Each sport has its own value, adjusted by intensity.
+  - Running uses your speed when you enter a distance.
+- **Balance** = calories eaten − (body + workouts). About 7,700 kcal ≈ 1 kg of body weight.
+
+These are estimates. Use the trend over weeks rather than any single day.
 
 ---
 
@@ -52,7 +74,10 @@ When `supabase/schema.sql` changes, paste the whole file into the Supabase **SQL
    - `NEXT_PUBLIC_SUPABASE_ANON_KEY` = anon key
 3. Click Deploy. Then update the Supabase Site URL (step 3) to the final Vercel URL.
 
-### 5. Lock it to just you (optional)
+### 5. Fill in your profile
+After signing in, open **Profile** and enter your sex, birth year, height and activity level. Without these, the app can still show calories eaten and burned by workouts, but not your surplus or deficit.
+
+### 6. Lock it to just you (optional)
 Each account can only ever see its own data (Row Level Security). After you've signed in once, you can block other accounts from signing up. In Supabase, go to **Authentication → Sign In / Providers → User Signups** and turn off **Allow new users to sign up**.
 
 ### Run locally

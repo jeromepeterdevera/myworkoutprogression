@@ -11,6 +11,21 @@ import ExerciseCard from "@/components/ExerciseCard";
 import ExercisePicker, { HistoryItem } from "@/components/ExercisePicker";
 import MealsTab from "@/components/MealsTab";
 import SleepTab from "@/components/SleepTab";
+import SportsTab from "@/components/SportsTab";
+import RunningTab from "@/components/RunningTab";
+import {
+  FALLBACK_KG,
+  Intensity,
+  Profile,
+  RunEntry,
+  SportEntry,
+  baselineKcal,
+  runKcal,
+  sportKcal,
+  weightTrainingKcal,
+  weightTrainingMinutes,
+} from "@/lib/activity";
+import { loadProfile } from "@/lib/daily";
 import { Food, Meal, MealEntry, sumEntries, toFood } from "@/lib/nutrition";
 import { formatDuration, sleepMinutes } from "@/lib/sleep";
 import {
@@ -56,6 +71,28 @@ const TABS: { value: Tab; label: string }[] = [
 ];
 const TAB_KEY = "day-tab";
 
+type WorkoutSub = "weights" | "sports" | "running";
+const WORKOUT_SUBS: { value: WorkoutSub; label: string }[] = [
+  { value: "weights", label: "Weight Training" },
+  { value: "sports", label: "Sports" },
+  { value: "running", label: "Running" },
+];
+const SUB_KEY = "day-workout-sub";
+
+interface SportRow {
+  sport: string;
+  minutes: number;
+  intensity: Intensity;
+  sets: { us: number | null; them: number | null }[];
+  position: number;
+}
+interface RunRow {
+  seconds: number;
+  distance: number | null;
+  distance_unit: "km" | "mi";
+  position: number;
+}
+
 const hasData = (s: SetEntry) => !!(s.reps || s.weight || s.seconds);
 const round2 = (n: number) => Math.round(n * 100) / 100;
 const timeOrEmpty = (t: string | null | undefined) => (t ? t.slice(0, 5) : "");
@@ -78,6 +115,14 @@ export default function DayPage() {
   const [type, setType] = useState<WorkoutType | null>(null);
   const [items, setItems] = useState<ExerciseEntry[]>([]);
   const [history, setHistory] = useState<HistoryItem[]>([]);
+  const [durationMin, setDurationMin] = useState<number | null>(null);
+  const [sub, setSub] = useState<WorkoutSub>("weights");
+
+  // sports & runs
+  const [sports, setSports] = useState<SportEntry[]>([]);
+  const [runs, setRuns] = useState<RunEntry[]>([]);
+  const [pastSports, setPastSports] = useState<string[]>([]);
+  const [profile, setProfile] = useState<Profile | null>(null);
 
   // daily log
   const [weightKg, setWeightKg] = useState<number | null>(null);
@@ -93,9 +138,9 @@ export default function DayPage() {
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [dirtyParts, setDirtyParts] = useState({ workout: false, meals: false, log: false });
+  const [dirtyParts, setDirtyParts] = useState({ workout: false, activities: false, meals: false, log: false });
   const [message, setMessage] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
-  const dirty = dirtyParts.workout || dirtyParts.meals || dirtyParts.log;
+  const dirty = Object.values(dirtyParts).some(Boolean);
 
   const dateObj = useMemo(() => parseISODate(date), [date]);
 
@@ -103,8 +148,16 @@ export default function DayPage() {
     try {
       const t = sessionStorage.getItem(TAB_KEY);
       if (t === "workout" || t === "meals" || t === "sleep") setTab(t);
+      const s = sessionStorage.getItem(SUB_KEY);
+      if (s === "weights" || s === "sports" || s === "running") setSub(s);
     } catch {}
   }, []);
+  const pickSub = (s: WorkoutSub) => {
+    setSub(s);
+    try {
+      sessionStorage.setItem(SUB_KEY, s);
+    } catch {}
+  };
   const pickTab = (t: Tab) => {
     setTab(t);
     try {
@@ -129,7 +182,7 @@ export default function DayPage() {
 
     const dayReq = sb
       .from("workout_days")
-      .select("type, day_exercises(section, position, unit, mode, sets, exercises(name))")
+      .select("type, duration_min, day_exercises(section, position, unit, mode, sets, exercises(name))")
       .eq("date", date)
       .maybeSingle();
     const logReq = sb.from("daily_logs").select("weight_kg, bed_time, wake_time").eq("date", date).maybeSingle();
@@ -156,6 +209,10 @@ export default function DayPage() {
       .order("date", { ascending: false })
       .limit(1)
       .maybeSingle();
+    const sportsReq = sb.from("sport_sessions").select("sport, minutes, intensity, sets, position").eq("date", date);
+    const runsReq = sb.from("runs").select("seconds, distance, distance_unit, position").eq("date", date);
+    const pastSportsReq = sb.from("sport_sessions").select("sport").order("date", { ascending: false }).limit(500);
+    const profileReq = loadProfile();
 
     // all previous workout sessions (paged, Supabase returns max 1000 rows per request)
     const histRows: RawRow[] = [];
@@ -174,18 +231,24 @@ export default function DayPage() {
       if (!data || data.length < PAGE) break;
     }
 
-    const [dayRes, logRes, prevWRes, recentRes, foodsRes, mealsRes, prevMealRes] = await Promise.all([
-      dayReq,
-      logReq,
-      prevWeightReq,
-      recentReq,
-      foodsReq,
-      mealsReq,
-      prevMealReq,
-    ]);
-    for (const r of [dayRes, logRes, prevWRes, recentRes, foodsRes, mealsRes, prevMealRes]) {
+    const [dayRes, logRes, prevWRes, recentRes, foodsRes, mealsRes, prevMealRes, sportsRes, runsRes, pastSportsRes, profileRes] =
+      await Promise.all([
+        dayReq,
+        logReq,
+        prevWeightReq,
+        recentReq,
+        foodsReq,
+        mealsReq,
+        prevMealReq,
+        sportsReq,
+        runsReq,
+        pastSportsReq,
+        profileReq,
+      ]);
+    for (const r of [dayRes, logRes, prevWRes, recentRes, foodsRes, mealsRes, prevMealRes, sportsRes, runsRes, pastSportsRes]) {
       if (r.error) errors.push(r.error.message);
     }
+    if (profileRes.error) errors.push(profileRes.error);
     if (errors.length) setMessage({ kind: "err", text: errors[0] });
 
     // build history: per exercise, most recent session (any workout type) + which types/sections it was done in
@@ -214,6 +277,7 @@ export default function DayPage() {
       (a, b) => (a.position ?? 0) - (b.position ?? 0)
     );
     setType((day?.type as WorkoutType) ?? null);
+    setDurationMin(day?.duration_min != null ? Number(day.duration_min) : null);
     setItems(
       rows.map((r) => ({
         key: newKey(),
@@ -240,7 +304,30 @@ export default function DayPage() {
     setMeals(toMealEntries((mealsRes.data ?? []) as MealRow[]));
     setPreviousMealDate(prevMealRes.data?.date ?? null);
 
-    setDirtyParts({ workout: false, meals: false, log: false });
+    setSports(
+      ((sportsRes.data ?? []) as SportRow[])
+        .sort((a, b) => a.position - b.position)
+        .map((r) => ({ key: newKey(), sport: r.sport, minutes: Number(r.minutes), intensity: r.intensity, sets: r.sets ?? [] }))
+    );
+    setRuns(
+      ((runsRes.data ?? []) as RunRow[])
+        .sort((a, b) => a.position - b.position)
+        .map((r) => ({
+          key: newKey(),
+          seconds: Number(r.seconds),
+          distance: r.distance == null ? null : Number(r.distance),
+          unit: r.distance_unit,
+        }))
+    );
+    const seen = new Set<string>();
+    setPastSports(
+      ((pastSportsRes.data ?? []) as { sport: string }[])
+        .map((r) => r.sport)
+        .filter((n) => (seen.has(n.toLowerCase()) ? false : (seen.add(n.toLowerCase()), true)))
+    );
+    setProfile(profileRes.profile);
+
+    setDirtyParts({ workout: false, activities: false, meals: false, log: false });
     setLoading(false);
   }, [date]);
 
@@ -345,6 +432,19 @@ export default function DayPage() {
     markDirty("log");
   };
 
+  const changeSports = (next: SportEntry[]) => {
+    setSports(next);
+    markDirty("activities");
+  };
+  const changeRuns = (next: RunEntry[]) => {
+    setRuns(next);
+    markDirty("activities");
+  };
+  const changeDuration = (v: number | null) => {
+    setDurationMin(v && v > 0 ? v : null);
+    markDirty("workout");
+  };
+
   const changeSleep = (patch: { bed?: string; wake?: string }) => {
     if (patch.bed !== undefined) setBed(patch.bed);
     if (patch.wake !== undefined) setWake(patch.wake);
@@ -352,7 +452,7 @@ export default function DayPage() {
   };
 
   // ---------- save ----------
-  const saveWorkout = async (t: WorkoutType | null, list: ExerciseEntry[]) => {
+  const saveWorkout = async (t: WorkoutType | null, list: ExerciseEntry[], duration: number | null) => {
     const payload = list.map((i) => ({
       name: i.name,
       section: i.section,
@@ -360,7 +460,30 @@ export default function DayPage() {
       mode: i.mode,
       sets: i.sets.map((s) => ({ reps: s.reps, weight: s.weight, seconds: s.seconds })),
     }));
-    const { error } = await supabase().rpc("save_day", { p_date: date, p_type: t, p_items: payload });
+    const { error } = await supabase().rpc("save_day", {
+      p_date: date,
+      p_type: t,
+      p_items: payload,
+      p_duration_min: duration,
+    });
+    return error?.message ?? null;
+  };
+
+  const saveActivities = async () => {
+    const { error } = await supabase().rpc("save_activities", {
+      p_date: date,
+      p_sports: sports
+        .filter((s) => s.sport.trim() && s.minutes && s.minutes > 0)
+        .map((s) => ({
+          sport: s.sport.trim(),
+          minutes: s.minutes,
+          intensity: s.intensity,
+          sets: s.sets.filter((x) => x.us != null || x.them != null),
+        })),
+      p_runs: runs
+        .filter((r) => r.seconds && r.seconds > 0)
+        .map((r) => ({ seconds: r.seconds, distance: r.distance, distance_unit: r.unit })),
+    });
     return error?.message ?? null;
   };
 
@@ -388,7 +511,14 @@ export default function DayPage() {
     const parts = (Object.keys(dirtyParts) as (keyof typeof dirtyParts)[]).filter((p) => dirtyParts[p]);
     const results = await Promise.all(
       parts.map(async (p) => {
-        const err = p === "workout" ? await saveWorkout(type, items) : p === "meals" ? await saveMeals() : await saveLog();
+        const err =
+          p === "workout"
+            ? await saveWorkout(type, items, durationMin)
+            : p === "activities"
+              ? await saveActivities()
+              : p === "meals"
+                ? await saveMeals()
+                : await saveLog();
         return { p, err };
       })
     );
@@ -407,18 +537,19 @@ export default function DayPage() {
   };
 
   const clearWorkout = async () => {
-    if (!confirm("Clear the workout logged for this day?")) return;
+    if (!confirm("Clear the weight training logged for this day?")) return;
     setType(null);
     setItems([]);
+    setDurationMin(null);
     setSaving(true);
-    const err = await saveWorkout(null, []);
+    const err = await saveWorkout(null, [], null);
     setSaving(false);
     if (err) {
       setMessage({ kind: "err", text: err });
       return;
     }
     setDirtyParts((d) => ({ ...d, workout: false }));
-    setMessage({ kind: "ok", text: "Workout cleared" });
+    setMessage({ kind: "ok", text: "Weight training cleared" });
   };
 
   const goto = (offset: number) => {
@@ -458,6 +589,16 @@ export default function DayPage() {
 
   const weightDelta =
     weightKg != null && prevWeight ? convert(weightKg, "kg", displayUnit) - convert(prevWeight.kg, "kg", displayUnit) : null;
+
+  // calorie burn
+  const kg = weightKg ?? prevWeight?.kg ?? FALLBACK_KG;
+  const usingFallbackKg = weightKg == null && !prevWeight;
+  const setCount = totals.sets + totals.coreSets;
+  const weightsKcal = type === "rest" && !durationMin && setCount === 0 ? 0 : weightTrainingKcal(durationMin, setCount, kg);
+  const sportsKcal = sports.reduce((a, s) => a + sportKcal(s, kg), 0);
+  const runsKcal = runs.reduce((a, r) => a + runKcal(r, kg), 0);
+  const exerciseKcalTotal = weightsKcal + sportsKcal + runsKcal;
+  const baseline = baselineKcal(profile, kg, date);
 
   if (loading) {
     return <div className="flex min-h-dvh items-center justify-center text-zinc-400">Loading…</div>;
@@ -512,7 +653,9 @@ export default function DayPage() {
         {TABS.map((t) => {
           const badge =
             t.value === "workout"
-              ? info?.short ?? (items.length ? "✓" : "")
+              ? exerciseKcalTotal >= 1
+                ? `≈ ${Math.round(exerciseKcalTotal)} kcal`
+                : ""
               : t.value === "meals"
                 ? mealKcal
                   ? `${mealKcal} kcal`
@@ -520,7 +663,8 @@ export default function DayPage() {
                 : sleepMin != null
                   ? formatDuration(sleepMin)
                   : "";
-          const partDirty = t.value === "workout" ? dirtyParts.workout : t.value === "meals" ? dirtyParts.meals : false;
+          const partDirty =
+            t.value === "workout" ? dirtyParts.workout || dirtyParts.activities : t.value === "meals" ? dirtyParts.meals : false;
           return (
             <button
               key={t.value}
@@ -537,6 +681,48 @@ export default function DayPage() {
       </nav>
 
       {tab === "workout" && (
+        <section className="mb-4 rounded-xl border border-zinc-200 bg-white px-3 py-2.5">
+          <div className="flex items-baseline justify-between">
+            <span className="text-sm font-medium">Estimated calories burned by workouts</span>
+            <span className="text-lg font-semibold">{Math.round(exerciseKcalTotal)} kcal</span>
+          </div>
+          <div className="mt-0.5 text-xs text-zinc-500">
+            Weights {Math.round(weightsKcal)} · Sports {Math.round(sportsKcal)} · Running {Math.round(runsKcal)}
+            {usingFallbackKg && <> · using {FALLBACK_KG} kg until you log your weight</>}
+          </div>
+        </section>
+      )}
+
+      {tab === "workout" && (
+        <nav className="mb-4 flex gap-1 overflow-x-auto border-b border-zinc-200 text-sm font-medium">
+          {WORKOUT_SUBS.map((s) => {
+            const count = s.value === "weights" ? items.length : s.value === "sports" ? sports.length : runs.length;
+            return (
+              <button
+                key={s.value}
+                type="button"
+                onClick={() => pickSub(s.value)}
+                className={`-mb-px shrink-0 border-b-2 px-3 py-2 ${
+                  sub === s.value ? "border-zinc-900 text-zinc-900" : "border-transparent text-zinc-500 hover:text-zinc-800"
+                }`}
+              >
+                {s.label}
+                {count > 0 && <span className="ml-1 rounded-full bg-zinc-200 px-1.5 text-[10px] text-zinc-700">{count}</span>}
+              </button>
+            );
+          })}
+        </nav>
+      )}
+
+      {tab === "workout" && sub === "sports" && (
+        <SportsTab items={sports} kg={kg} pastSports={pastSports} onChange={changeSports} />
+      )}
+
+      {tab === "workout" && sub === "running" && (
+        <RunningTab items={runs} kg={kg} defaultUnit={displayUnit === "lb" ? "mi" : "km"} onChange={changeRuns} />
+      )}
+
+      {tab === "workout" && sub === "weights" && (
         <>
           {/* workout type */}
           <section className="mb-4">
@@ -564,6 +750,24 @@ export default function DayPage() {
               label="Core"
               value={totals.coreSets ? `${totals.coreSets} sets${totals.coreSeconds ? ` · ${formatSeconds(totals.coreSeconds)}` : ""}` : "–"}
             />
+          </section>
+
+          {/* duration (for calorie burn) */}
+          <section className="mb-5 flex items-center gap-3 rounded-xl border border-zinc-200 bg-white px-3 py-2.5">
+            <div className="min-w-0 flex-1">
+              <div className="text-sm font-medium">Session length</div>
+              <div className="text-xs text-zinc-500">
+                {durationMin
+                  ? `≈ ${Math.round(weightsKcal)} kcal burned`
+                  : setCount
+                    ? `Not entered: estimating ${weightTrainingMinutes(null, setCount)} min from your sets (≈ ${Math.round(weightsKcal)} kcal)`
+                    : "Used to estimate calories burned"}
+              </div>
+            </div>
+            <div className="w-20">
+              <NumInput value={durationMin} onChange={changeDuration} decimal placeholder="–" ariaLabel="Session length in minutes" />
+            </div>
+            <span className="text-sm text-zinc-500">min</span>
           </section>
 
           {/* main workout */}
@@ -638,7 +842,7 @@ export default function DayPage() {
           {(type || items.length > 0) && (
             <div className="text-center">
               <button onClick={clearWorkout} className="text-sm text-red-600 hover:underline">
-                Clear workout
+                Clear weight training
               </button>
             </div>
           )}
@@ -653,6 +857,7 @@ export default function DayPage() {
           onChange={changeMeals}
           onFoodSaved={onFoodSaved}
           onCopyPrevious={copyPreviousMeals}
+          burn={{ baseline, exercise: exerciseKcalTotal }}
         />
       )}
 
