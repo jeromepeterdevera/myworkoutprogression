@@ -48,6 +48,9 @@ export default function TimeChart({
     return () => ro.disconnect();
   }, []);
 
+  // the dates change when the range changes: drop a hover index that may no longer exist
+  useEffect(() => setHover(null), [dates]);
+
   const pad = { top: 10, right: 8, bottom: 22, left: 44 };
   const innerW = width - pad.left - pad.right;
   const innerH = height - pad.top - pad.bottom;
@@ -77,7 +80,7 @@ export default function TimeChart({
     setHover(i >= 0 && i < n ? i : null);
   };
 
-  const labelIdx = n <= 1 ? [0] : n <= 8 ? dates.map((_, i) => i) : [0, Math.floor((n - 1) / 2), n - 1];
+  const labelIdx = n === 0 ? [] : n <= 8 ? dates.map((_, i) => i) : [0, Math.floor((n - 1) / 2), n - 1];
 
   return (
     <div ref={wrap} className="relative w-full">
