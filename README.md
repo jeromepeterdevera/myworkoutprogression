@@ -21,7 +21,7 @@ This is a calendar log for workouts, meals, weight and sleep, built with Next.js
   - Calories, protein, carbs and fat are calculated per meal and for the day, along with the day's calorie surplus or deficit.
   - You can copy meals from the previous logged day.
 - **Sleep tab:** enter when you went to bed (and stopped doing anything) and when you woke up. It shows:
-  - hours slept and sleep cycles
+  - estimated time asleep: time in bed minus an educated guess at how long it took to fall asleep. The guess starts at a typical 15 minutes and is adjusted for the day before (workout calories, calorie surplus or deficit), how much you slept the night before, and how your bedtime compares with your usual one. The Sleep tab lists each adjustment.
   - your 7-night average
   - how you did against your sleep goal
   - when to go to bed tonight

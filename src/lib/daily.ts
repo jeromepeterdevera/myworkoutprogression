@@ -10,7 +10,7 @@ import {
   weightTrainingKcal,
 } from "./activity";
 import { macrosFor, toFood } from "./nutrition";
-import { sleepMinutes } from "./sleep";
+import { SleepContext, asleepMinutes, estimateLatency, readSleepGoal, sleepMinutes } from "./sleep";
 import { DayExerciseRow, WorkoutType, dayTotals, parseISODate, toISODate } from "./workout";
 
 export interface DaySummary {
@@ -28,7 +28,13 @@ export interface DaySummary {
   baseline: number | null;
   /** intake − (baseline + exercise); null if intake or baseline is missing */
   balance: number | null;
+  /** estimated minutes asleep (time in bed minus the time it took to fall asleep) */
   sleepMin: number | null;
+  /** minutes between going to bed and waking up */
+  inBedMin: number | null;
+  /** estimated minutes it took to fall asleep */
+  fallAsleepMin: number | null;
+  bedTime: string | null;
   /** weight logged on this day */
   weightKg: number | null;
 }
@@ -73,9 +79,38 @@ export async function loadProfile(): Promise<{ profile: Profile | null; error: s
   };
 }
 
+export function addDays(iso: string, n: number) {
+  const d = parseISODate(iso);
+  d.setDate(d.getDate() + n);
+  return toISODate(d);
+}
+
+/** Night history needed to estimate sleep on `date` (the morning you woke up). */
+const CONTEXT_DAYS = 8;
+
+/** What happened the day before `date` and on the nights before, for estimateLatency. */
+export function sleepContextFor(date: string, days: Record<string, DaySummary>, goalMin: number): SleepContext {
+  const prev = days[addDays(date, -1)];
+  const recentBeds: string[] = [];
+  for (let i = 1; i <= 7; i++) {
+    const b = days[addDays(date, -i)]?.bedTime;
+    if (b) recentBeds.push(b);
+  }
+  return {
+    // nothing logged that day is unknown, not a rest day
+    exerciseKcal: prev && (prev.workoutType || prev.sports.length || prev.runs.length) ? prev.exerciseKcal : null,
+    balance: prev?.balance ?? null,
+    prevNightAsleep: prev?.sleepMin ?? null,
+    recentBeds,
+    goalMin,
+  };
+}
+
 /** Loads everything logged between two dates (inclusive) and summarises each day. */
-export async function loadRange(from: string, to: string) {
+export async function loadRange(rangeFrom: string, to: string) {
   const sb = supabase();
+  // a week earlier too, so the first nights in range can be estimated from the days before them
+  const from = addDays(rangeFrom, -CONTEXT_DAYS);
   const [w, l, allW, m, s, r, p] = await Promise.all([
     fetchAll((a, b) =>
       sb
@@ -113,6 +148,9 @@ export async function loadRange(from: string, to: string) {
       baseline: null,
       balance: null,
       sleepMin: null,
+      inBedMin: null,
+      fallAsleepMin: null,
+      bedTime: null,
       weightKg: null,
     };
   }
@@ -133,7 +171,8 @@ export async function loadRange(from: string, to: string) {
     const d = days[row.date];
     if (!d) continue;
     d.weightKg = row.weight_kg == null ? null : Number(row.weight_kg);
-    d.sleepMin = sleepMinutes(row.bed_time, row.wake_time);
+    d.inBedMin = sleepMinutes(row.bed_time, row.wake_time);
+    d.bedTime = row.bed_time ? row.bed_time.slice(0, 5) : null;
   }
 
   type MRow = { date: string; quantity: number; foods: Record<string, unknown> | null };
@@ -166,6 +205,17 @@ export async function loadRange(from: string, to: string) {
     d.baseline = baselineKcal(profile, kgOn(d.date), d.date);
     if (d.intake != null && d.baseline != null) d.balance = d.intake - d.baseline - d.exerciseKcal;
   }
+
+  // nights in date order: each estimate uses the night before it
+  const goal = readSleepGoal();
+  for (const date of datesBetween(from, to)) {
+    const d = days[date];
+    if (d.inBedMin == null || !d.bedTime) continue;
+    const { minutes } = estimateLatency(d.bedTime, sleepContextFor(date, days, goal));
+    d.fallAsleepMin = minutes;
+    d.sleepMin = asleepMinutes(d.inBedMin, minutes);
+  }
+  for (const date of Object.keys(days)) if (date < rangeFrom) delete days[date];
 
   return { days, profile, hasWeight, error };
 }

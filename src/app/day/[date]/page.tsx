@@ -25,9 +25,9 @@ import {
   weightTrainingKcal,
   weightTrainingMinutes,
 } from "@/lib/activity";
-import { loadProfile } from "@/lib/daily";
+import { DaySummary, addDays, loadProfile, loadRange, sleepContextFor } from "@/lib/daily";
 import { Food, Meal, MealEntry, sumEntries, toFood } from "@/lib/nutrition";
-import { formatDuration, sleepMinutes } from "@/lib/sleep";
+import { asleepMinutes, estimateLatency, formatDuration, readSleepGoal, sleepMinutes } from "@/lib/sleep";
 import {
   ExerciseEntry,
   Mode,
@@ -129,7 +129,7 @@ export default function DayPage() {
   const [prevWeight, setPrevWeight] = useState<{ date: string; kg: number } | null>(null);
   const [bed, setBed] = useState("");
   const [wake, setWake] = useState("");
-  const [recentSleep, setRecentSleep] = useState<number[]>([]);
+  const [sleepDays, setSleepDays] = useState<Record<string, DaySummary>>({});
 
   // meals
   const [foods, setFoods] = useState<Food[]>([]);
@@ -177,8 +177,6 @@ export default function DayPage() {
     const sb = supabase();
     const errors: string[] = [];
 
-    const weekAgo = parseISODate(date);
-    weekAgo.setDate(weekAgo.getDate() - 6);
 
     const dayReq = sb
       .from("workout_days")
@@ -194,12 +192,8 @@ export default function DayPage() {
       .order("date", { ascending: false })
       .limit(1)
       .maybeSingle();
-    const recentReq = sb
-      .from("daily_logs")
-      .select("date, bed_time, wake_time")
-      .gte("date", toISODate(weekAgo))
-      .lt("date", date)
-      .order("date", { ascending: false });
+    // the week before: last night's fall-asleep estimate depends on yesterday and the nights before
+    const recentReq = loadRange(addDays(date, -7), addDays(date, -1));
     const foodsReq = sb.from("foods").select("*").order("name");
     const mealsReq = sb.from("meal_items").select("meal, position, food_id, quantity").eq("date", date);
     const prevMealReq = sb
@@ -245,7 +239,8 @@ export default function DayPage() {
         pastSportsReq,
         profileReq,
       ]);
-    for (const r of [dayRes, logRes, prevWRes, recentRes, foodsRes, mealsRes, prevMealRes, sportsRes, runsRes, pastSportsRes]) {
+    if (recentRes.error) errors.push(recentRes.error);
+    for (const r of [dayRes, logRes, prevWRes, foodsRes, mealsRes, prevMealRes, sportsRes, runsRes, pastSportsRes]) {
       if (r.error) errors.push(r.error.message);
     }
     if (profileRes.error) errors.push(profileRes.error);
@@ -294,11 +289,7 @@ export default function DayPage() {
     setBed(timeOrEmpty(log?.bed_time));
     setWake(timeOrEmpty(log?.wake_time));
     setPrevWeight(prevWRes.data ? { date: prevWRes.data.date, kg: Number(prevWRes.data.weight_kg) } : null);
-    setRecentSleep(
-      (recentRes.data ?? [])
-        .map((r) => sleepMinutes(r.bed_time, r.wake_time))
-        .filter((m): m is number => m != null)
-    );
+    setSleepDays(recentRes.days);
 
     setFoods((foodsRes.data ?? []).map(toFood));
     setMeals(toMealEntries((mealsRes.data ?? []) as MealRow[]));
@@ -585,7 +576,8 @@ export default function DayPage() {
 
   const foodMap = useMemo(() => new Map(foods.map((f) => [f.id, f])), [foods]);
   const mealKcal = Math.round(sumEntries(meals, foodMap).kcal);
-  const sleepMin = sleepMinutes(bed, wake);
+  const inBed = sleepMinutes(bed, wake);
+  const sleepMin = inBed == null ? null : asleepMinutes(inBed, estimateLatency(bed, sleepContextFor(date, sleepDays, readSleepGoal())).minutes);
 
   const weightDelta =
     weightKg != null && prevWeight ? convert(weightKg, "kg", displayUnit) - convert(prevWeight.kg, "kg", displayUnit) : null;
@@ -861,7 +853,7 @@ export default function DayPage() {
         />
       )}
 
-      {tab === "sleep" && <SleepTab bed={bed} wake={wake} recent={recentSleep} onChange={changeSleep} />}
+      {tab === "sleep" && <SleepTab date={date} bed={bed} wake={wake} history={sleepDays} onChange={changeSleep} />}
 
       {/* sticky save bar */}
       <div className="fixed inset-x-0 bottom-0 border-t border-zinc-200 bg-white/95 px-3 py-3 backdrop-blur">

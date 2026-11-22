@@ -1,30 +1,38 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { CYCLE_MIN, FALL_ASLEEP_MIN, formatClock, formatDuration, fromMinutes, sleepMinutes, toMinutes } from "@/lib/sleep";
-
-const GOAL_KEY = "sleep-goal-min";
-const GOALS = [420, 450, 480, 510, 540];
+import { DaySummary, addDays, sleepContextFor } from "@/lib/daily";
+import {
+  CYCLE_MIN,
+  FALL_ASLEEP_MIN,
+  SLEEP_GOALS as GOALS,
+  SLEEP_GOAL_KEY as GOAL_KEY,
+  asleepMinutes,
+  estimateLatency,
+  formatClock,
+  formatDuration,
+  fromMinutes,
+  readSleepGoal,
+  sleepMinutes,
+  toMinutes,
+} from "@/lib/sleep";
 
 export default function SleepTab({
+  date,
   bed,
   wake,
-  recent,
+  history,
   onChange,
 }: {
+  date: string;
   bed: string;
   wake: string;
-  /** sleep minutes for the nights before this one (most recent first, up to 6) */
-  recent: number[];
+  /** summaries of the 7 days before `date` (sleep estimates, activity, eating) */
+  history: Record<string, DaySummary>;
   onChange: (patch: { bed?: string; wake?: string }) => void;
 }) {
   const [goal, setGoal] = useState(480);
-  useEffect(() => {
-    try {
-      const v = Number(localStorage.getItem(GOAL_KEY));
-      if (GOALS.includes(v)) setGoal(v);
-    } catch {}
-  }, []);
+  useEffect(() => setGoal(readSleepGoal()), []);
   const pickGoal = (g: number) => {
     setGoal(g);
     try {
@@ -32,7 +40,14 @@ export default function SleepTab({
     } catch {}
   };
 
-  const mins = sleepMinutes(bed, wake);
+  const inBed = sleepMinutes(bed, wake);
+  const est = bed ? estimateLatency(bed, sleepContextFor(date, history, goal)) : null;
+  const mins = inBed != null && est ? asleepMinutes(inBed, est.minutes) : null;
+  const recent: number[] = [];
+  for (let i = 1; i <= 6; i++) {
+    const m = history[addDays(date, -i)]?.sleepMin;
+    if (m != null) recent.push(m);
+  }
   const nights = mins != null ? [mins, ...recent] : recent;
   const avg = nights.length ? nights.reduce((a, b) => a + b, 0) / nights.length : null;
   const diff = mins != null ? mins - goal : null;
@@ -72,10 +87,41 @@ export default function SleepTab({
       </section>
 
       <section className="grid grid-cols-3 gap-2 text-center">
-        <Box label="Slept" value={mins != null ? formatDuration(mins) : "–"} />
-        <Box label="Sleep cycles" value={mins != null ? `≈ ${fmtCycles(mins)}` : "–"} />
+        <Box label="Asleep (est.)" value={mins != null ? `≈ ${formatDuration(mins)}` : "–"} />
+        <Box label="Fell asleep" value={est && inBed != null ? `≈ ${formatClock(fromMinutes(toMinutes(bed) + est.minutes))}` : "–"} />
         <Box label={`Avg, last ${nights.length || 7} nights`} value={avg != null ? formatDuration(avg) : "–"} />
       </section>
+
+      {est && inBed != null && (
+        <section className="rounded-xl border border-zinc-200 bg-white p-3 text-sm">
+          <div className="flex items-baseline justify-between gap-2">
+            <h3 className="font-semibold">Time to fall asleep</h3>
+            <span className="font-semibold">≈ {est.minutes} min</span>
+          </div>
+          <p className="mt-0.5 text-xs text-zinc-500">
+            In bed {formatDuration(inBed)} − {est.minutes} min to fall asleep = about {formatDuration(mins ?? 0)} asleep ({fmtCycles(mins ?? 0)} cycles).
+          </p>
+          <ul className="mt-2 space-y-1 text-xs">
+            <li className="flex justify-between gap-2 text-zinc-600">
+              <span>Typical for most people</span>
+              <span>15 min</span>
+            </li>
+            {est.factors.map((f) => (
+              <li key={f.label} className="flex justify-between gap-2 text-zinc-600">
+                <span>{f.label}</span>
+                <span className={f.minutes > 0 ? "text-amber-700" : "text-emerald-700"}>
+                  {f.minutes > 0 ? "+" : "−"}
+                  {Math.abs(f.minutes)} min
+                </span>
+              </li>
+            ))}
+          </ul>
+          <p className="mt-2 text-[11px] text-zinc-400">
+            An educated guess from the day before (workouts and calories), the night before, and your usual bedtime. Log yesterday&apos;s workouts and meals
+            to sharpen it.
+          </p>
+        </section>
+      )}
 
       {diff != null && (
         <p className={`rounded-lg px-3 py-2 text-sm ${diff >= 0 ? "bg-emerald-50 text-emerald-800" : "bg-amber-50 text-amber-800"}`}>
