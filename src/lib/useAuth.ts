@@ -34,6 +34,16 @@ export async function signInWithMicrosoft() {
   });
 }
 
+export async function signInWithGoogle() {
+  await supabase().auth.signInWithOAuth({
+    provider: "google",
+    options: {
+      redirectTo: typeof window !== "undefined" ? window.location.origin : undefined,
+      queryParams: { prompt: "select_account" },
+    },
+  });
+}
+
 export async function signOut() {
   await supabase().auth.signOut();
 }

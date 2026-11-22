@@ -6,6 +6,8 @@ import NumInput from "./NumInput";
 import FoodForm from "./FoodForm";
 import { newKey, parseISODate } from "@/lib/workout";
 import { Food, MEALS, Macros, Meal, MealEntry, fmt1, foodBaseLabel, foodKcal, macrosFor, sumEntries } from "@/lib/nutrition";
+import UsdaResults from "./UsdaResults";
+import { UsdaFood, saveUsdaFood } from "@/lib/usda";
 
 export default function MealsTab({
   foods,
@@ -30,8 +32,8 @@ export default function MealsTab({
   const foodMap = useMemo(() => new Map(foods.map((f) => [f.id, f])), [foods]);
   const total = sumEntries(items, foodMap);
 
-  const addItem = (meal: Meal, food: Food) => {
-    onChange([...items, { key: newKey(), meal, foodId: food.id, quantity: food.base_amount }]);
+  const addItem = (meal: Meal, food: Food, quantity: number) => {
+    onChange([...items, { key: newKey(), meal, foodId: food.id, quantity }]);
     setAdding(null);
   };
   const update = (key: string, patch: Partial<MealEntry>) => onChange(items.map((i) => (i.key === key ? { ...i, ...patch } : i)));
@@ -94,9 +96,15 @@ export default function MealsTab({
                             >
                               {food?.name ?? "Unknown food"}
                             </button>
-                            <span className="block text-xs text-zinc-500">
-                              {Math.round(mm.kcal)} kcal · P {fmt1(mm.protein)} · C {fmt1(mm.carbs)} · F {fmt1(mm.fat)}
-                            </span>
+                            {food && foodKcal(food) === 0 ? (
+                              <button type="button" onClick={() => setEditing(it.foodId)} className="block text-left text-xs font-medium text-amber-700 hover:underline">
+                                No nutrition values. Tap to add them
+                              </button>
+                            ) : (
+                              <span className="block text-xs text-zinc-500">
+                                {Math.round(mm.kcal)} kcal · P {fmt1(mm.protein)} · C {fmt1(mm.carbs)} · F {fmt1(mm.fat)}
+                              </span>
+                            )}
                           </div>
                           <div className="w-20 shrink-0">
                             <NumInput value={it.quantity} onChange={(q) => update(it.key, { quantity: q })} decimal ariaLabel="Amount" />
@@ -119,7 +127,7 @@ export default function MealsTab({
 
               <div className="px-3 pb-3 pt-1">
                 {adding === m.value ? (
-                  <FoodAdder foods={foods} onPick={(f) => addItem(m.value, f)} onCreated={(f) => { onFoodSaved(f); addItem(m.value, f); }} onClose={() => setAdding(null)} />
+                  <FoodAdder foods={foods} onAdd={(f, q) => addItem(m.value, f, q)} onFoodSaved={onFoodSaved} onClose={() => setAdding(null)} />
                 ) : (
                   <button type="button" onClick={() => setAdding(m.value)} className="text-sm font-medium text-zinc-700 hover:underline">
                     + Add food
@@ -130,32 +138,50 @@ export default function MealsTab({
           );
         })}
       </div>
-      <p className="mt-3 text-center text-xs text-zinc-400">Tap a food&apos;s name to edit its nutrition values.</p>
+      <p className="mt-3 text-center text-xs text-zinc-400">Tap a food&apos;s name to change its nutrition values.</p>
     </div>
   );
 }
 
 function FoodAdder({
   foods,
-  onPick,
-  onCreated,
+  onAdd,
+  onFoodSaved,
   onClose,
 }: {
   foods: Food[];
-  onPick: (f: Food) => void;
-  onCreated: (f: Food) => void;
+  onAdd: (f: Food, quantity: number) => void;
+  onFoodSaved: (f: Food) => void;
   onClose: () => void;
 }) {
+  const [chosen, setChosen] = useState<Food | null>(null);
+  const onPick = (f: Food) => setChosen(f);
+  const onCreated = (f: Food) => {
+    onFoodSaved(f);
+    setChosen(f);
+  };
   const [q, setQ] = useState("");
   const [creating, setCreating] = useState(false);
+  const [busyId, setBusyId] = useState<number | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   const matches = useMemo(() => {
     const s = q.trim().toLowerCase();
     const list = s ? foods.filter((f) => f.name.toLowerCase().includes(s)) : foods;
-    return list.slice(0, 50);
+    return list.slice(0, s ? 8 : 50);
   }, [foods, q]);
-  const exact = foods.some((f) => f.name.toLowerCase() === q.trim().toLowerCase());
+  const mine = useMemo(() => new Set(foods.map((f) => f.name.toLowerCase())), [foods]);
 
+  const pickUsda = async (u: UsdaFood) => {
+    setBusyId(u.fdcId);
+    setError(null);
+    const { food, error } = await saveUsdaFood(u);
+    setBusyId(null);
+    if (error || !food) setError(error ?? "Couldn't add that food");
+    else onCreated(food);
+  };
+
+  if (chosen) return <AmountStep food={chosen} onAdd={(q) => onAdd(chosen, q)} onBack={() => setChosen(null)} />;
   if (creating) return <FoodForm initialName={q.trim()} onSaved={onCreated} onCancel={() => setCreating(false)} />;
 
   return (
@@ -165,35 +191,89 @@ function FoodAdder({
           autoFocus
           value={q}
           onChange={(e) => setQ(e.target.value)}
-          placeholder={foods.length ? "Search your foods…" : "Type a food name…"}
+          placeholder="What did you eat? e.g. scrambled egg"
           className="min-w-0 flex-1 rounded-md border border-zinc-300 bg-white px-2 py-2 text-base outline-none focus:border-zinc-900"
         />
         <button type="button" onClick={onClose} className="rounded-md px-2 text-sm text-zinc-600 hover:bg-zinc-200">
           Cancel
         </button>
       </div>
-      <ul className="mt-1 max-h-64 divide-y divide-zinc-100 overflow-y-auto">
-        {matches.map((f) => (
-          <li key={f.id}>
-            <button type="button" onClick={() => onPick(f)} className="flex w-full items-baseline justify-between gap-2 px-1 py-2 text-left hover:bg-white">
-              <span className="truncate font-medium">{f.name}</span>
-              <span className="shrink-0 text-xs text-zinc-500">
-                {Math.round(foodKcal(f))} kcal / {foodBaseLabel(f)}
-              </span>
-            </button>
-          </li>
-        ))}
-      </ul>
-      {!exact && (
-        <button
-          type="button"
-          onClick={() => setCreating(true)}
-          className="mt-1 w-full rounded-md bg-zinc-900 py-2 text-sm font-medium text-white"
-        >
-          {q.trim() ? `Create “${q.trim()}”` : "Create a new food"}
-        </button>
-      )}
+      <div className="max-h-80 overflow-y-auto">
+        {matches.length > 0 && (
+          <>
+            {q.trim() && <div className="mt-2 px-1 text-[11px] font-medium uppercase tracking-wide text-zinc-500">Your foods</div>}
+            <ul className="divide-y divide-zinc-100">
+              {matches.map((f) => (
+                <li key={f.id}>
+                  <button type="button" onClick={() => onPick(f)} className="flex w-full items-baseline justify-between gap-2 px-1 py-2 text-left hover:bg-white">
+                    <span className="truncate font-medium">{f.name}</span>
+                    <span className="shrink-0 text-xs text-zinc-500">
+                      {Math.round(foodKcal(f))} kcal / {foodBaseLabel(f)}
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </>
+        )}
+        <UsdaResults q={q} onPick={pickUsda} busyId={busyId} hide={mine} />
+      </div>
+      {error && <p className="mt-1 px-1 text-sm text-red-600">{error}</p>}
+      <button type="button" onClick={() => setCreating(true)} className="mt-2 w-full rounded-md border border-zinc-300 bg-white py-2 text-sm text-zinc-700 hover:bg-zinc-100">
+        Not listed? Enter it from the label
+      </button>
     </div>
+  );
+}
+
+/** After picking a food: how much did you eat? Macros preview live as you type. */
+function AmountStep({ food, onAdd, onBack }: { food: Food; onAdd: (quantity: number) => void; onBack: () => void }) {
+  const perPiece = food.base_unit !== "g" && food.base_unit !== "ml";
+  const [qty, setQty] = useState<number | null>(perPiece ? food.base_amount : null);
+  const m = macrosFor(food, qty);
+  const submit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (qty && qty > 0) onAdd(qty);
+  };
+  return (
+    <form onSubmit={submit} className="rounded-lg border border-zinc-200 bg-zinc-50 p-3">
+      <div className="font-medium">{food.name}</div>
+      <label className="mt-2 block text-sm text-zinc-600" htmlFor="amount-eaten">
+        How much did you eat?
+      </label>
+      <div className="mt-1 flex items-center gap-2">
+        <input
+          id="amount-eaten"
+          autoFocus
+          type="text"
+          inputMode="decimal"
+          value={qty ?? ""}
+          onChange={(e) => {
+            const raw = e.target.value.replace(",", ".");
+            if (!/^\d*\.?\d*$/.test(raw)) return;
+            setQty(raw === "" || raw === "." ? null : Number(raw));
+          }}
+          placeholder="e.g. 150"
+          className="w-28 rounded-md border border-zinc-300 bg-white px-2 py-2 text-center text-base outline-none focus:border-zinc-900"
+        />
+        <span className="text-sm text-zinc-500">{food.base_unit}</span>
+        <button type="submit" disabled={!qty} className="ml-auto rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white disabled:opacity-30">
+          Add
+        </button>
+      </div>
+      <div className="mt-2 text-xs text-zinc-500">
+        {qty ? (
+          <>
+            <span className="font-semibold text-zinc-800">{Math.round(m.kcal)} kcal</span> · P {fmt1(m.protein)} · C {fmt1(m.carbs)} · F {fmt1(m.fat)}
+          </>
+        ) : (
+          <>Weigh it if you can; macros are worked out from this amount.</>
+        )}
+      </div>
+      <button type="button" onClick={onBack} className="mt-2 text-sm text-zinc-600 hover:underline">
+        ← Pick a different food
+      </button>
+    </form>
   );
 }
 

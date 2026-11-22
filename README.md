@@ -17,7 +17,7 @@ This is a calendar log for workouts, meals, weight and sleep, built with Next.js
   - **Sports:** the sport, minutes played and intensity. You can also add set scores (yours vs opponent's) for sports scored in sets.
   - **Running:** duration, plus distance if you have it. It shows pace and speed.
 - **Meals tab:** add foods to Breakfast, Lunch, Dinner and Snacks.
-  - The first time you use a food, enter its macros from the label (e.g. per 100 g, or per 1 egg). After that, pick it from your list and type the amount.
+  - Type what you ate (e.g. "scrambled egg"), pick a match from the USDA food database, and enter the weight in grams. The food is saved to your list, so next time it comes up straight away. For packaged food you can also type the numbers from the label.
   - Calories, protein, carbs and fat are calculated per meal and for the day, along with the day's calorie surplus or deficit.
   - You can copy meals from the previous logged day.
 - **Sleep tab:** enter when you went to bed (and stopped doing anything) and when you woke up. It shows:
@@ -67,11 +67,19 @@ When `supabase/schema.sql` changes, paste the whole file into the Supabase **SQL
    - Site URL: your Vercel URL, e.g. `https://your-app.vercel.app`
    - Redirect URLs: add `https://your-app.vercel.app/**` and `http://localhost:3000/**`
 
+### 3b. Add Google sign-in (optional)
+1. Go to https://console.cloud.google.com, create a project (any name), then open **Google Auth Platform** (or **APIs & Services → OAuth consent screen**). Choose **External**, fill in the app name and your email, and save. Then either add the people who will use the app under **Audience → Test users**, or click **Publish app**.
+2. Go to **Clients** (or **Credentials → Create credentials → OAuth client ID**) and create a **Web application** client.
+3. Under **Authorized redirect URIs**, add the callback URL shown on Supabase's Google provider page: `https://YOUR-PROJECT.supabase.co/auth/v1/callback`.
+4. Copy the **Client ID** and **Client secret**.
+5. In Supabase, go to **Authentication → Sign In / Providers → Google**, enable it, paste both, and save.
+
 ### 4. Deploy to Vercel
 1. Push this folder to a GitHub repo, then in Vercel choose **Add New → Project** and import it.
 2. Add these Environment Variables:
    - `NEXT_PUBLIC_SUPABASE_URL` = Project URL
    - `NEXT_PUBLIC_SUPABASE_ANON_KEY` = anon key
+   - `FDC_API_KEY` = your free USDA FoodData Central key from https://fdc.nal.usda.gov/api-key-signup (powers the food search in Meals; without it the app falls back to the heavily rate-limited `DEMO_KEY`)
 3. Click Deploy. Then update the Supabase Site URL (step 3) to the final Vercel URL.
 
 ### 5. Fill in your profile

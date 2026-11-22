@@ -3,7 +3,9 @@
 import { useId, useState } from "react";
 import NumInput from "./NumInput";
 import { supabase } from "@/lib/supabase";
+import UsdaResults from "./UsdaResults";
 import { BASE_UNITS, Food, fmt1, toFood } from "@/lib/nutrition";
+import { UsdaFood, saveUsdaFood } from "@/lib/usda";
 
 /** Create a new food (from its label) or edit an existing one. Saves straight to the database. */
 export default function FoodForm({
@@ -17,22 +19,41 @@ export default function FoodForm({
   onSaved: (food: Food) => void;
   onCancel: () => void;
 }) {
-  const [name, setName] = useState(initial?.name ?? initialName ?? "");
-  const [baseAmount, setBaseAmount] = useState<number | null>(initial?.base_amount ?? 100);
-  const [baseUnit, setBaseUnit] = useState(initial?.base_unit ?? "g");
-  const [calories, setCalories] = useState<number | null>(initial?.calories ?? null);
-  const [protein, setProtein] = useState<number | null>(initial?.protein ?? null);
-  const [carbs, setCarbs] = useState<number | null>(initial?.carbs ?? null);
-  const [fat, setFat] = useState<number | null>(initial?.fat ?? null);
+  const start = initial;
+  // a 0 from an empty save reads better as an empty box
+  const nz = (v: number | null | undefined) => (v ? v : null);
+  const [name, setName] = useState(start?.name ?? initialName ?? "");
+  const [baseAmount, setBaseAmount] = useState<number | null>(start?.base_amount ?? 100);
+  const [baseUnit, setBaseUnit] = useState(start?.base_unit ?? "g");
+  const [calories, setCalories] = useState<number | null>(nz(start?.calories));
+  const [protein, setProtein] = useState<number | null>(nz(start?.protein));
+  const [carbs, setCarbs] = useState<number | null>(nz(start?.carbs));
+  const [fat, setFat] = useState<number | null>(nz(start?.fat));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const unitList = useId();
 
   const autoKcal = (protein ?? 0) * 4 + (carbs ?? 0) * 4 + (fat ?? 0) * 9;
-  const canSave = name.trim() && baseAmount && baseAmount > 0 && baseUnit.trim();
+  const hasNutrition = !!(calories || protein || carbs || fat);
+  const canSave = name.trim() && baseAmount && baseAmount > 0 && baseUnit.trim() && hasNutrition;
+  const [busyId, setBusyId] = useState<number | null>(null);
+
+  // take the values straight from USDA (per 100 g) and save
+  const pickUsda = async (u: UsdaFood) => {
+    setBusyId(u.fdcId);
+    setError(null);
+    const { food, error } = await saveUsdaFood(u, initial);
+    setBusyId(null);
+    if (error || !food) setError(error ?? "Couldn't save that food");
+    else onSaved(food);
+  };
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!hasNutrition) {
+      setError("Enter the calories or at least one macro, otherwise this food will count as 0.");
+      return;
+    }
     if (!canSave) return;
     setSaving(true);
     setError(null);
@@ -60,7 +81,10 @@ export default function FoodForm({
   return (
     <form onSubmit={submit} className="space-y-3 rounded-lg border border-zinc-200 bg-zinc-50 p-3">
       <div className="text-xs font-medium uppercase tracking-wide text-zinc-500">
-        {initial ? "Edit food" : "New food"} <span className="normal-case tracking-normal text-zinc-400">· copy the numbers from the label</span>
+        {initial ? "Edit food" : "New food"}{" "}
+        <span className="normal-case tracking-normal text-zinc-400">
+          · {hasNutrition ? "copy the numbers from the label" : "pick a USDA match or copy the numbers from the label"}
+        </span>
       </div>
       <input
         value={name}
@@ -68,6 +92,11 @@ export default function FoodForm({
         placeholder="Food name, e.g. Chicken breast (cooked)"
         className="w-full rounded-md border border-zinc-300 bg-white px-2 py-2 text-base outline-none focus:border-zinc-900"
       />
+      {!hasNutrition && name.trim().length >= 2 && (
+        <div className="rounded-md border border-zinc-200 bg-white px-2 pb-1">
+          <UsdaResults q={name} onPick={pickUsda} busyId={busyId} limit={5} />
+        </div>
+      )}
       <div>
         <span className="mb-1 block text-xs text-zinc-500">Nutrition values are per</span>
         <div className="flex gap-2">
@@ -108,7 +137,7 @@ export default function FoodForm({
         <button type="button" onClick={onCancel} className="rounded-md px-3 py-2 text-sm text-zinc-600 hover:bg-zinc-200">
           Cancel
         </button>
-        <button type="submit" disabled={!canSave || saving} className="rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white disabled:opacity-30">
+        <button type="submit" disabled={saving} className="rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white disabled:opacity-30">
           {saving ? "Saving…" : initial ? "Save food" : "Create & add"}
         </button>
       </div>
@@ -124,4 +153,3 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
     </label>
   );
 }
-
