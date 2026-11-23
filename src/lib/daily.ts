@@ -1,4 +1,5 @@
 import { supabase } from "./supabase";
+import { MEALS_ENABLED } from "./features";
 import {
   FALLBACK_KG,
   Intensity,
@@ -99,7 +100,7 @@ export function sleepContextFor(date: string, days: Record<string, DaySummary>, 
   return {
     // nothing logged that day is unknown, not a rest day
     exerciseKcal: prev && (prev.workoutType || prev.sports.length || prev.runs.length) ? prev.exerciseKcal : null,
-    balance: prev?.balance ?? null,
+    balance: MEALS_ENABLED ? (prev?.balance ?? null) : null,
     prevNightAsleep: prev?.sleepMin ?? null,
     recentBeds,
     goalMin,

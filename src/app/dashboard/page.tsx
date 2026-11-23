@@ -7,6 +7,7 @@ import UnitToggle from "@/components/UnitToggle";
 import TimeChart, { Series } from "@/components/TimeChart";
 import { useDisplayUnit } from "@/lib/useDisplayUnit";
 import { DaySummary, loadRange } from "@/lib/daily";
+import { MEALS_ENABLED } from "@/lib/features";
 import { profileComplete } from "@/lib/activity";
 import { formatDuration } from "@/lib/sleep";
 import { convert, parseISODate, toISODate } from "@/lib/workout";
@@ -168,7 +169,7 @@ export default function DashboardPage() {
           <Link href="/profile" className="font-medium underline">
             profile
           </Link>{" "}
-          to see total calories burned and your surplus or deficit.
+          to see total calories burned{MEALS_ENABLED ? " and your surplus or deficit" : ""}.
         </p>
       )}
 
@@ -181,21 +182,21 @@ export default function DashboardPage() {
             sub={tiles.weightChange == null ? `${tiles.weighIns} weigh-ins` : `${signed(tiles.weightChange, 1)} ${unit} this period`}
           />
           <Tile label="Avg sleep" value={tiles.sleep == null ? "–" : formatDuration(tiles.sleep)} sub={`${tiles.nights} nights logged`} />
-          <Tile
+          {MEALS_ENABLED && <Tile
             label="Avg eaten / day"
             value={tiles.eaten == null ? "–" : `${kcal(tiles.eaten)} kcal`}
             sub={tiles.protein == null ? "no meals logged" : `${Math.round(tiles.protein)} g protein`}
-          />
+          />}
           <Tile
             label="Avg burned / day"
             value={tiles.burn == null ? "–" : `${kcal(tiles.burn)} kcal`}
             sub={tiles.workoutAvg == null ? "no workouts logged" : `workouts ≈ ${kcal(tiles.workoutAvg)} on ${tiles.workoutDays} days`}
           />
-          <Tile
+          {MEALS_ENABLED && <Tile
             label={tiles.balance == null ? "Avg balance" : tiles.balance > 0 ? "Avg surplus" : "Avg deficit"}
             value={tiles.balance == null ? "–" : `${signed(Math.round(tiles.balance))} kcal`}
             sub={tiles.perWeek == null ? "needs meals + profile" : `≈ ${signed(tiles.perWeek, 2)} ${unit} / week`}
-          />
+          />}
         </section>
 
         <ChartCard title={`Weight (${unit})${per}`}>
@@ -211,11 +212,11 @@ export default function DashboardPage() {
           />
         </ChartCard>
 
-        <ChartCard title={`Calories eaten vs burned (kcal)${per}`}>
+        <ChartCard title={`${MEALS_ENABLED ? "Calories eaten vs burned" : "Calories burned"} (kcal)${per}`}>
           <TimeChart
             dates={chart.dates}
             series={[
-              { name: "Eaten", color: BLUE, values: chart.eaten, kind: "line", connectGaps: false },
+              ...(MEALS_ENABLED ? [{ name: "Eaten", color: BLUE, values: chart.eaten, kind: "line" as const, connectGaps: false }] : []),
               { name: "Burned", color: ORANGE, values: chart.burn, kind: "line" },
             ]}
             format={kcal}
@@ -224,14 +225,14 @@ export default function DashboardPage() {
           {!hasProfile && <p className="mt-1 text-xs text-zinc-500">Burned needs your profile.</p>}
         </ChartCard>
 
-        <ChartCard title={`Daily balance (kcal)${per}`} note="Below zero = deficit, above = surplus">
+        {MEALS_ENABLED && <ChartCard title={`Daily balance (kcal)${per}`} note="Below zero = deficit, above = surplus">
           <TimeChart
             dates={chart.dates}
             series={[{ name: "Balance", color: BLUE, values: chart.balance, kind: "bar" }]}
             format={(v) => signed(Math.round(v))}
             diverging={[BLUE, RED]}
           />
-        </ChartCard>
+        </ChartCard>}
 
         <ChartCard title={`Calories burned by workouts (kcal)${per}`}>
           <TimeChart dates={chart.dates} series={[{ name: "Workouts", color: ORANGE, values: chart.workout, kind: "bar" }]} format={kcal} />
@@ -247,9 +248,9 @@ export default function DashboardPage() {
                   <th className="px-2 py-1.5 text-left font-medium">Date</th>
                   <th className="px-2 py-1.5 font-medium">Weight</th>
                   <th className="px-2 py-1.5 font-medium">Sleep</th>
-                  <th className="px-2 py-1.5 font-medium">Eaten</th>
+                  {MEALS_ENABLED && <th className="px-2 py-1.5 font-medium">Eaten</th>}
                   <th className="px-2 py-1.5 font-medium">Burned</th>
-                  <th className="px-2 py-1.5 font-medium">Balance</th>
+                  {MEALS_ENABLED && <th className="px-2 py-1.5 font-medium">Balance</th>}
                 </tr>
               </thead>
               <tbody className="divide-y divide-zinc-100">
@@ -264,9 +265,9 @@ export default function DashboardPage() {
                       </td>
                       <td className="px-2 py-1.5">{d.weightKg == null ? "–" : convert(d.weightKg, "kg", unit).toFixed(1)}</td>
                       <td className="px-2 py-1.5">{d.sleepMin == null ? "–" : formatDuration(d.sleepMin)}</td>
-                      <td className="px-2 py-1.5">{d.intake == null ? "–" : kcal(d.intake)}</td>
+                      {MEALS_ENABLED && <td className="px-2 py-1.5">{d.intake == null ? "–" : kcal(d.intake)}</td>}
                       <td className="px-2 py-1.5">{b == null ? (d.exerciseKcal >= 1 ? `+${kcal(d.exerciseKcal)}` : "–") : kcal(b)}</td>
-                      <td className="px-2 py-1.5">{d.balance == null ? "–" : signed(Math.round(d.balance))}</td>
+                      {MEALS_ENABLED && <td className="px-2 py-1.5">{d.balance == null ? "–" : signed(Math.round(d.balance))}</td>}
                     </tr>
                   );
                 })}

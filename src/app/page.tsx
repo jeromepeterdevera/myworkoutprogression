@@ -6,6 +6,7 @@ import UnitToggle from "@/components/UnitToggle";
 import AppNav from "@/components/AppNav";
 import { useDisplayUnit } from "@/lib/useDisplayUnit";
 import { formatDuration } from "@/lib/sleep";
+import { MEALS_ENABLED } from "@/lib/features";
 import { KM_PER_MI, profileComplete } from "@/lib/activity";
 import { DaySummary, loadRange } from "@/lib/daily";
 import { WORKOUT_TYPES, convert, dayTotals, formatNumber, toISODate, typeInfo } from "@/lib/workout";
@@ -16,7 +17,7 @@ const VIEWS: { value: View; label: string }[] = [
   { value: "weight", label: "Weight" },
   { value: "calories", label: "Calories" },
   { value: "sleep", label: "Sleep" },
-];
+].filter((v) => MEALS_ENABLED || v.value !== "calories") as { value: View; label: string }[];
 
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const MONTH_KEY = "calendar-month";
@@ -45,7 +46,7 @@ export default function CalendarPage() {
         setMonth(new Date(y, m - 1, 1));
       }
       const v = sessionStorage.getItem(VIEW_KEY);
-      if (v === "meals") setView("calories");
+      if (v === "meals" && MEALS_ENABLED) setView("calories");
       else if (VIEWS.some((x) => x.value === v)) setView(v as View);
     } catch {}
   }, []);

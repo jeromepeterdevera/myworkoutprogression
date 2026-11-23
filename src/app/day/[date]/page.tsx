@@ -10,6 +10,7 @@ import NumInput from "@/components/NumInput";
 import ExerciseCard from "@/components/ExerciseCard";
 import ExercisePicker, { HistoryItem } from "@/components/ExercisePicker";
 import MealsTab from "@/components/MealsTab";
+import { MEALS_ENABLED } from "@/lib/features";
 import SleepTab from "@/components/SleepTab";
 import SportsTab from "@/components/SportsTab";
 import RunningTab from "@/components/RunningTab";
@@ -68,7 +69,7 @@ const TABS: { value: Tab; label: string }[] = [
   { value: "workout", label: "Workout" },
   { value: "meals", label: "Meals" },
   { value: "sleep", label: "Sleep" },
-];
+].filter((t) => MEALS_ENABLED || t.value !== "meals") as { value: Tab; label: string }[];
 const TAB_KEY = "day-tab";
 
 type WorkoutSub = "weights" | "sports" | "running";
@@ -147,7 +148,7 @@ export default function DayPage() {
   useEffect(() => {
     try {
       const t = sessionStorage.getItem(TAB_KEY);
-      if (t === "workout" || t === "meals" || t === "sleep") setTab(t);
+      if (TABS.some((x) => x.value === t)) setTab(t as Tab);
       const s = sessionStorage.getItem(SUB_KEY);
       if (s === "weights" || s === "sports" || s === "running") setSub(s);
     } catch {}
@@ -770,18 +771,8 @@ export default function DayPage() {
                 {info && type !== "rest" ? `${info.label} workout` : "Workout"}
               </h2>
 
-              {type && type !== "rest" && (
-                <ExercisePicker
-                  title={`From previous ${info?.label} days`}
-                  candidates={mainCandidates}
-                  allNames={allNames}
-                  defaultOpen={mainItems.length === 0}
-                  onAdd={(names) => addExercises(names, "main")}
-                  onAddNew={(name, unit) => addExercises([name], "main", { unit, mode: "reps" })}
-                />
-              )}
-
-              <div className="mt-3 space-y-3">
+              {/* exercises first, the add panel after them: a new exercise lands right above the panel */}
+              <div className="space-y-3">
                 {mainItems.map((it, idx) => (
                   <ExerciseCard
                     key={it.key}
@@ -796,6 +787,19 @@ export default function DayPage() {
                   />
                 ))}
               </div>
+
+              {type && type !== "rest" && (
+                <div className={mainItems.length ? "mt-3" : ""}>
+                  <ExercisePicker
+                    title={`From previous ${info?.label} days`}
+                    candidates={mainCandidates}
+                    allNames={allNames}
+                    defaultOpen={mainItems.length === 0}
+                    onAdd={(names) => addExercises(names, "main")}
+                    onAddNew={(name, unit) => addExercises([name], "main", { unit, mode: "reps" })}
+                  />
+                </div>
+              )}
             </section>
           )}
 
@@ -804,16 +808,7 @@ export default function DayPage() {
             <h2 className="mb-2 flex items-center gap-2 text-lg font-semibold">
               <span className="rounded bg-teal-100 px-1.5 text-xs font-bold text-teal-700">CORE</span> Core session
             </h2>
-            <ExercisePicker
-              title="Previous core exercises"
-              candidates={coreCandidates}
-              allNames={allNames}
-              defaultOpen={false}
-              allowMode
-              onAdd={(names) => addExercises(names, "core")}
-              onAddNew={(name, unit, mode) => addExercises([name], "core", { unit, mode })}
-            />
-            <div className="mt-3 space-y-3">
+            <div className="space-y-3">
               {coreItems.map((it, idx) => (
                 <ExerciseCard
                   key={it.key}
@@ -829,6 +824,17 @@ export default function DayPage() {
                 />
               ))}
             </div>
+            <div className={coreItems.length ? "mt-3" : ""}>
+              <ExercisePicker
+                title="Previous core exercises"
+                candidates={coreCandidates}
+                allNames={allNames}
+                defaultOpen={false}
+                allowMode
+                onAdd={(names) => addExercises(names, "core")}
+                onAddNew={(name, unit, mode) => addExercises([name], "core", { unit, mode })}
+              />
+            </div>
           </section>
 
           {(type || items.length > 0) && (
@@ -841,7 +847,7 @@ export default function DayPage() {
         </>
       )}
 
-      {tab === "meals" && (
+      {tab === "meals" && MEALS_ENABLED && (
         <MealsTab
           foods={foods}
           items={meals}

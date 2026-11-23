@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import UnitToggle from "./UnitToggle";
 import { Mode, Section, SetEntry, Unit, WorkoutType, formatSet, parseISODate } from "@/lib/workout";
 
@@ -34,6 +34,10 @@ export default function ExercisePicker({
   const [newUnit, setNewUnit] = useState<Unit>("kg");
   const [newMode, setNewMode] = useState<Mode>("reps");
   const listId = useId();
+  const panel = useRef<HTMLDivElement>(null);
+  // new exercises appear above this panel; keep it on screen (iOS Safari does not do this on its own)
+  const keepInView = () =>
+    requestAnimationFrame(() => requestAnimationFrame(() => panel.current?.scrollIntoView({ block: "nearest", behavior: "smooth" })));
 
   useEffect(() => {
     if (defaultOpen) setOpen(true);
@@ -61,6 +65,7 @@ export default function ExercisePicker({
     // keep the order shown in the list
     onAdd(candidates.filter((c) => checked.has(c.name)).map((c) => c.name));
     setChecked(new Set());
+    keepInView();
   };
 
   const addNew = (e: React.FormEvent) => {
@@ -68,10 +73,11 @@ export default function ExercisePicker({
     if (!newName.trim()) return;
     onAddNew(newName.trim(), newUnit, newMode);
     setNewName("");
+    keepInView();
   };
 
   return (
-    <div className="rounded-xl border border-zinc-200 bg-white">
+    <div ref={panel} className="scroll-mb-4 rounded-xl border border-zinc-200 bg-white">
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
