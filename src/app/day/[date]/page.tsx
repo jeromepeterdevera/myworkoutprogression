@@ -642,7 +642,10 @@ export default function DayPage() {
       </section>
 
       {/* tabs */}
-      <nav className="mb-4 grid grid-cols-3 gap-1 rounded-lg bg-zinc-200 p-1 text-sm font-medium">
+      <nav
+        className="mb-4 grid gap-1 rounded-lg bg-zinc-200 p-1 text-sm font-medium"
+        style={{ gridTemplateColumns: `repeat(${TABS.length}, minmax(0, 1fr))` }}
+      >
         {TABS.map((t) => {
           const badge =
             t.value === "workout"

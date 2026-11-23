@@ -176,7 +176,10 @@ export default function CalendarPage() {
         <UnitToggle unit={unit} onChange={setUnit} />
       </header>
 
-      <nav className="mb-3 grid grid-cols-4 gap-1 rounded-lg bg-zinc-200 p-1 text-sm font-medium">
+      <nav
+        className="mb-3 grid gap-1 rounded-lg bg-zinc-200 p-1 text-sm font-medium"
+        style={{ gridTemplateColumns: `repeat(${VIEWS.length}, minmax(0, 1fr))` }}
+      >
         {VIEWS.map((v) => (
           <button
             key={v.value}
