@@ -338,3 +338,56 @@ end;
 $$;
 
 grant execute on function public.save_activities(date, jsonb, jsonb) to authenticated;
+
+-- ============================================================
+-- Sleep sessions: one row per sleep (nights and naps).
+-- bed_at / wake_at are exact moments; bed_tz / wake_tz are the time zones the phone was in (e.g. Asia/Manila).
+-- wake_at is null while you are still in bed.
+-- ============================================================
+create table if not exists public.sleep_sessions (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null default auth.uid() references auth.users(id) on delete cascade,
+  bed_at timestamptz not null,
+  bed_tz text not null check (bed_tz <> ''),
+  wake_at timestamptz,
+  wake_tz text check (wake_tz <> ''),
+  created_at timestamptz not null default now(),
+  check ((wake_at is null) = (wake_tz is null)),
+  check (wake_at is null or (wake_at > bed_at and wake_at <= bed_at + interval '24 hours'))
+);
+
+create index if not exists sleep_sessions_user_bed on public.sleep_sessions (user_id, bed_at);
+create index if not exists sleep_sessions_user_wake on public.sleep_sessions (user_id, wake_at);
+-- you can only be in bed once at a time
+create unique index if not exists sleep_sessions_one_open on public.sleep_sessions (user_id) where wake_at is null;
+
+grant select, insert, update, delete on public.sleep_sessions to authenticated;
+alter table public.sleep_sessions enable row level security;
+
+drop policy if exists "own sleep sessions" on public.sleep_sessions;
+create policy "own sleep sessions" on public.sleep_sessions
+  for all using (user_id = auth.uid()) with check (user_id = auth.uid());
+
+-- Copy nights logged the old way (bed_time / wake_time on the wake-up date). Those have no time zone,
+-- so they are read as Asia/Manila. Each is copied once; the flag stops a re-run from bringing back
+-- a night you deleted since.
+alter table public.daily_logs add column if not exists sleep_migrated boolean not null default false;
+
+insert into public.sleep_sessions (user_id, bed_at, bed_tz, wake_at, wake_tz)
+select o.user_id, o.bed_at, 'Asia/Manila', o.wake_at, 'Asia/Manila'
+from (
+  select l.user_id,
+         ((case when l.bed_time >= l.wake_time then l.date - 1 else l.date end) + l.bed_time) at time zone 'Asia/Manila' as bed_at,
+         (l.date + l.wake_time) at time zone 'Asia/Manila' as wake_at
+  from public.daily_logs l
+  where not l.sleep_migrated and l.bed_time is not null and l.wake_time is not null
+) o
+where not exists (
+  select 1 from public.sleep_sessions s
+  where s.user_id = o.user_id
+    and s.bed_at < o.wake_at
+    and coalesce(s.wake_at, 'infinity'::timestamptz) > o.bed_at
+);
+
+update public.daily_logs set sleep_migrated = true
+where not sleep_migrated and bed_time is not null and wake_time is not null;

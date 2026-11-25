@@ -7,7 +7,7 @@ This is a calendar log for workouts, meals, weight and sleep, built with Next.js
   - **Weight:** your morning weigh-ins.
   - **Calories:** daily surplus or deficit, plus calories eaten.
   - **Sleep:** hours slept, colour-coded.
-- **Day page:** morning weight at the top, then **Workout**, **Meals** and **Sleep** tabs. One Save button saves everything.
+- **Day page:** morning weight at the top, then your workouts (and meals, when switched on in `src/lib/features.ts`). One Save button saves everything.
 - **Workout tab:** three sub-tabs, so you can log any mix of them on the same day. Each shows an estimate of calories burned.
   - **Weight Training:**
     - Pick the type: Push, Pull, Legs, Upper Body, Lower Body or Rest. Choosing a type lists every exercise you've done on that type, with your most recent numbers, ready to tick and add.
@@ -20,12 +20,12 @@ This is a calendar log for workouts, meals, weight and sleep, built with Next.js
   - Type what you ate (e.g. "scrambled egg"), pick a match from the USDA food database, and enter the weight in grams. The food is saved to your list, so next time it comes up straight away. For packaged food you can also type the numbers from the label.
   - Calories, protein, carbs and fat are calculated per meal and for the day, along with the day's calorie surplus or deficit.
   - You can copy meals from the previous logged day.
-- **Sleep tab:** enter when you went to bed (and stopped doing anything) and when you woke up. It shows:
-  - estimated time asleep: time in bed minus an educated guess at how long it took to fall asleep. The guess starts at a typical 15 minutes and is adjusted for the day before (workout calories, calorie surplus or deficit), how much you slept the night before, and how your bedtime compares with your usual one. The Sleep tab lists each adjustment.
-  - your 7-night average
-  - how you did against your sleep goal
-  - when to go to bed tonight
-- **Dashboard:** averages and charts for weight, sleep, calories eaten vs burned, daily balance and workout burn. Choose 7 days, 30 days, 90 days or 1 year. There's also a data table.
+- **Sleep page:** tap **I'm going to bed** at night and **I'm awake** in the morning.
+  - Each sleep has a full date and time, so late nights, naps and daytime sleep all work. It counts for the day you woke up.
+  - Forgot to tap? Add or edit a sleep afterwards. A banner on the other pages reminds you while you're marked as in bed.
+  - Time asleep is time in bed minus an estimate of how long you took to fall asleep (15 minutes, adjusted for the day's activity, the night before and your usual bedtime). Naps count in full.
+  - Each tap saves the exact moment and your phone's time zone, so durations stay right when you travel or the clocks change, and past nights keep their local times.
+- **Dashboard:** averages and charts for weight, sleep and sleep schedule, calories eaten vs burned, daily balance and workout burn. Choose 7 days, 30 days, 90 days or 1 year. There's also a data table.
 - **Profile:** sex, birth year, height and day-to-day activity. These are used to estimate the calories your body burns outside workouts.
 
 ### How calories burned are estimated

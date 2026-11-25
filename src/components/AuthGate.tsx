@@ -1,5 +1,6 @@
 "use client";
 
+import SleepBanner from "./SleepBanner";
 import { useAuth, signInWithGoogle, signInWithMicrosoft } from "@/lib/useAuth";
 
 export default function AuthGate({ children }: { children: React.ReactNode }) {
@@ -46,5 +47,10 @@ export default function AuthGate({ children }: { children: React.ReactNode }) {
     );
   }
 
-  return <>{children}</>;
+  return (
+    <>
+      <SleepBanner />
+      {children}
+    </>
+  );
 }

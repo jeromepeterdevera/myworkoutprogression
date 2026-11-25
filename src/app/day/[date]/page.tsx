@@ -11,7 +11,6 @@ import ExerciseCard from "@/components/ExerciseCard";
 import ExercisePicker, { HistoryItem } from "@/components/ExercisePicker";
 import MealsTab from "@/components/MealsTab";
 import { MEALS_ENABLED } from "@/lib/features";
-import SleepTab from "@/components/SleepTab";
 import SportsTab from "@/components/SportsTab";
 import RunningTab from "@/components/RunningTab";
 import {
@@ -26,9 +25,8 @@ import {
   weightTrainingKcal,
   weightTrainingMinutes,
 } from "@/lib/activity";
-import { DaySummary, addDays, loadProfile, loadRange, sleepContextFor } from "@/lib/daily";
+import { loadProfile } from "@/lib/daily";
 import { Food, Meal, MealEntry, sumEntries, toFood } from "@/lib/nutrition";
-import { asleepMinutes, estimateLatency, formatDuration, readSleepGoal, sleepMinutes } from "@/lib/sleep";
 import {
   ExerciseEntry,
   Mode,
@@ -64,11 +62,10 @@ interface MealRow {
   quantity: number;
 }
 
-type Tab = "workout" | "meals" | "sleep";
+type Tab = "workout" | "meals";
 const TABS: { value: Tab; label: string }[] = [
   { value: "workout", label: "Workout" },
   { value: "meals", label: "Meals" },
-  { value: "sleep", label: "Sleep" },
 ].filter((t) => MEALS_ENABLED || t.value !== "meals") as { value: Tab; label: string }[];
 const TAB_KEY = "day-tab";
 
@@ -96,7 +93,6 @@ interface RunRow {
 
 const hasData = (s: SetEntry) => !!(s.reps || s.weight || s.seconds);
 const round2 = (n: number) => Math.round(n * 100) / 100;
-const timeOrEmpty = (t: string | null | undefined) => (t ? t.slice(0, 5) : "");
 
 function toMealEntries(rows: MealRow[]): MealEntry[] {
   return [...rows]
@@ -128,9 +124,8 @@ export default function DayPage() {
   // daily log
   const [weightKg, setWeightKg] = useState<number | null>(null);
   const [prevWeight, setPrevWeight] = useState<{ date: string; kg: number } | null>(null);
-  const [bed, setBed] = useState("");
-  const [wake, setWake] = useState("");
-  const [sleepDays, setSleepDays] = useState<Record<string, DaySummary>>({});
+  // sleep lives on the Sleep page now; times logged here before are passed through untouched
+  const [oldSleep, setOldSleep] = useState<{ bed: string | null; wake: string | null }>({ bed: null, wake: null });
 
   // meals
   const [foods, setFoods] = useState<Food[]>([]);
@@ -193,8 +188,6 @@ export default function DayPage() {
       .order("date", { ascending: false })
       .limit(1)
       .maybeSingle();
-    // the week before: last night's fall-asleep estimate depends on yesterday and the nights before
-    const recentReq = loadRange(addDays(date, -7), addDays(date, -1));
     const foodsReq = sb.from("foods").select("*").order("name");
     const mealsReq = sb.from("meal_items").select("meal, position, food_id, quantity").eq("date", date);
     const prevMealReq = sb
@@ -226,12 +219,11 @@ export default function DayPage() {
       if (!data || data.length < PAGE) break;
     }
 
-    const [dayRes, logRes, prevWRes, recentRes, foodsRes, mealsRes, prevMealRes, sportsRes, runsRes, pastSportsRes, profileRes] =
+    const [dayRes, logRes, prevWRes, foodsRes, mealsRes, prevMealRes, sportsRes, runsRes, pastSportsRes, profileRes] =
       await Promise.all([
         dayReq,
         logReq,
         prevWeightReq,
-        recentReq,
         foodsReq,
         mealsReq,
         prevMealReq,
@@ -240,7 +232,6 @@ export default function DayPage() {
         pastSportsReq,
         profileReq,
       ]);
-    if (recentRes.error) errors.push(recentRes.error);
     for (const r of [dayRes, logRes, prevWRes, foodsRes, mealsRes, prevMealRes, sportsRes, runsRes, pastSportsRes]) {
       if (r.error) errors.push(r.error.message);
     }
@@ -287,10 +278,8 @@ export default function DayPage() {
 
     const log = logRes.data;
     setWeightKg(log?.weight_kg != null ? Number(log.weight_kg) : null);
-    setBed(timeOrEmpty(log?.bed_time));
-    setWake(timeOrEmpty(log?.wake_time));
+    setOldSleep({ bed: log?.bed_time ?? null, wake: log?.wake_time ?? null });
     setPrevWeight(prevWRes.data ? { date: prevWRes.data.date, kg: Number(prevWRes.data.weight_kg) } : null);
-    setSleepDays(recentRes.days);
 
     setFoods((foodsRes.data ?? []).map(toFood));
     setMeals(toMealEntries((mealsRes.data ?? []) as MealRow[]));
@@ -437,12 +426,6 @@ export default function DayPage() {
     markDirty("workout");
   };
 
-  const changeSleep = (patch: { bed?: string; wake?: string }) => {
-    if (patch.bed !== undefined) setBed(patch.bed);
-    if (patch.wake !== undefined) setWake(patch.wake);
-    markDirty("log");
-  };
-
   // ---------- save ----------
   const saveWorkout = async (t: WorkoutType | null, list: ExerciseEntry[], duration: number | null) => {
     const payload = list.map((i) => ({
@@ -491,8 +474,8 @@ export default function DayPage() {
     const { error } = await supabase().rpc("save_daily_log", {
       p_date: date,
       p_weight_kg: weightKg,
-      p_bed_time: bed || null,
-      p_wake_time: wake || null,
+      p_bed_time: oldSleep.bed,
+      p_wake_time: oldSleep.wake,
     });
     return error?.message ?? null;
   };
@@ -577,8 +560,6 @@ export default function DayPage() {
 
   const foodMap = useMemo(() => new Map(foods.map((f) => [f.id, f])), [foods]);
   const mealKcal = Math.round(sumEntries(meals, foodMap).kcal);
-  const inBed = sleepMinutes(bed, wake);
-  const sleepMin = inBed == null ? null : asleepMinutes(inBed, estimateLatency(bed, sleepContextFor(date, sleepDays, readSleepGoal())).minutes);
 
   const weightDelta =
     weightKg != null && prevWeight ? convert(weightKg, "kg", displayUnit) - convert(prevWeight.kg, "kg", displayUnit) : null;
@@ -641,8 +622,8 @@ export default function DayPage() {
         <span className="w-5 text-sm text-zinc-500">{displayUnit}</span>
       </section>
 
-      {/* tabs */}
-      <nav
+      {/* tabs (only when there is more than one) */}
+      {TABS.length > 1 && <nav
         className="mb-4 grid gap-1 rounded-lg bg-zinc-200 p-1 text-sm font-medium"
         style={{ gridTemplateColumns: `repeat(${TABS.length}, minmax(0, 1fr))` }}
       >
@@ -652,15 +633,11 @@ export default function DayPage() {
               ? exerciseKcalTotal >= 1
                 ? `≈ ${Math.round(exerciseKcalTotal)} kcal`
                 : ""
-              : t.value === "meals"
-                ? mealKcal
-                  ? `${mealKcal} kcal`
-                  : ""
-                : sleepMin != null
-                  ? formatDuration(sleepMin)
-                  : "";
+              : mealKcal
+                ? `${mealKcal} kcal`
+                : "";
           const partDirty =
-            t.value === "workout" ? dirtyParts.workout || dirtyParts.activities : t.value === "meals" ? dirtyParts.meals : false;
+            t.value === "workout" ? dirtyParts.workout || dirtyParts.activities : dirtyParts.meals;
           return (
             <button
               key={t.value}
@@ -674,7 +651,7 @@ export default function DayPage() {
             </button>
           );
         })}
-      </nav>
+      </nav>}
 
       {tab === "workout" && (
         <section className="mb-4 rounded-xl border border-zinc-200 bg-white px-3 py-2.5">
@@ -861,8 +838,6 @@ export default function DayPage() {
           burn={{ baseline, exercise: exerciseKcalTotal }}
         />
       )}
-
-      {tab === "sleep" && <SleepTab date={date} bed={bed} wake={wake} history={sleepDays} onChange={changeSleep} />}
 
       {/* sticky save bar */}
       <div className="fixed inset-x-0 bottom-0 border-t border-zinc-200 bg-white/95 px-3 py-3 backdrop-blur">

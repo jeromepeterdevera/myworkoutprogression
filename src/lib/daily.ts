@@ -11,7 +11,21 @@ import {
   weightTrainingKcal,
 } from "./activity";
 import { macrosFor, toFood } from "./nutrition";
-import { SleepContext, asleepMinutes, estimateLatency, readSleepGoal, sleepMinutes } from "./sleep";
+import {
+  SAME_NIGHT_GAP_MIN,
+  SleepNight,
+  SleepSession,
+  dayBeforeBed,
+  elapsedMinutes,
+  estimateLatency,
+  isNap,
+  mainSleep,
+  readSleepGoal,
+  wallAt,
+  wallDate,
+  wallTime,
+} from "./sleep";
+import { SLEEP_COLUMNS, SleepRow, toSession } from "./sleepStore";
 import { DayExerciseRow, WorkoutType, dayTotals, parseISODate, toISODate } from "./workout";
 
 export interface DaySummary {
@@ -29,13 +43,10 @@ export interface DaySummary {
   baseline: number | null;
   /** intake − (baseline + exercise); null if intake or baseline is missing */
   balance: number | null;
-  /** estimated minutes asleep (time in bed minus the time it took to fall asleep) */
+  /** estimated minutes asleep in sleeps that ended this day, naps included */
   sleepMin: number | null;
-  /** minutes between going to bed and waking up */
-  inBedMin: number | null;
-  /** estimated minutes it took to fall asleep */
-  fallAsleepMin: number | null;
-  bedTime: string | null;
+  /** sleeps that ended this day, in order */
+  nights: SleepNight[];
   /** weight logged on this day */
   weightKg: number | null;
 }
@@ -86,25 +97,63 @@ export function addDays(iso: string, n: number) {
   return toISODate(d);
 }
 
-/** Night history needed to estimate sleep on `date` (the morning you woke up). */
+/** How far back to look when estimating the first night in a range. */
 const CONTEXT_DAYS = 8;
 
-/** What happened the day before `date` and on the nights before, for estimateLatency. */
-export function sleepContextFor(date: string, days: Record<string, DaySummary>, goalMin: number): SleepContext {
-  const prev = days[addDays(date, -1)];
+/** Turns logged sleeps (oldest first) into nights with estimates, and adds them to the day you woke up. */
+function addNights(sessions: SleepSession[], days: Record<string, DaySummary>, goalMin: number) {
   const recentBeds: string[] = [];
-  for (let i = 1; i <= 7; i++) {
-    const b = days[addDays(date, -i)]?.bedTime;
-    if (b) recentBeds.push(b);
+  let prev: SleepNight | null = null; // last sleep that wasn't a nap
+  for (const s of sessions) {
+    if (s.wakeAt == null || s.wakeTz == null) continue;
+    const bed = wallAt(s.bedAt, s.bedTz);
+    const wake = wallAt(s.wakeAt, s.wakeTz);
+    const day = days[wallDate(wake)];
+    if (!day) continue;
+    const inBed = elapsedMinutes(s.bedAt, s.wakeAt);
+    const nap = isNap(bed, inBed);
+    const backToBed: boolean = !!prev && elapsedMinutes(prev.wakeAt, s.bedAt) < SAME_NIGHT_GAP_MIN;
+    let latency = 0;
+    let factors: SleepNight["factors"] = [];
+    if (!nap) {
+      const before = days[dayBeforeBed(bed)];
+      const est = estimateLatency(
+        wallTime(bed),
+        before && !backToBed
+          ? {
+              // nothing logged that day is unknown, not a rest day
+              exerciseKcal: before.workoutType || before.sports.length || before.runs.length ? before.exerciseKcal : null,
+              balance: MEALS_ENABLED ? before.balance : null,
+              prevNightAsleep: mainSleep(before.nights) ? before.sleepMin : null,
+              recentBeds: recentBeds.slice(-7),
+              goalMin,
+            }
+          : { exerciseKcal: null, balance: null, prevNightAsleep: null, recentBeds: [], goalMin }
+      );
+      latency = Math.min(est.minutes, inBed);
+      factors = est.factors;
+    }
+    const night: SleepNight = {
+      id: s.id,
+      bedAt: s.bedAt,
+      bedTz: s.bedTz,
+      wakeAt: s.wakeAt,
+      wakeTz: s.wakeTz,
+      bed,
+      wake,
+      inBed,
+      latency,
+      asleep: inBed - latency,
+      factors,
+      nap,
+    };
+    day.nights.push(night);
+    day.sleepMin = (day.sleepMin ?? 0) + night.asleep;
+    if (!nap) {
+      if (!backToBed) recentBeds.push(wallTime(bed));
+      prev = night;
+    }
   }
-  return {
-    // nothing logged that day is unknown, not a rest day
-    exerciseKcal: prev && (prev.workoutType || prev.sports.length || prev.runs.length) ? prev.exerciseKcal : null,
-    balance: MEALS_ENABLED ? (prev?.balance ?? null) : null,
-    prevNightAsleep: prev?.sleepMin ?? null,
-    recentBeds,
-    goalMin,
-  };
 }
 
 /** Loads everything logged between two dates (inclusive) and summarises each day. */
@@ -112,7 +161,7 @@ export async function loadRange(rangeFrom: string, to: string) {
   const sb = supabase();
   // a week earlier too, so the first nights in range can be estimated from the days before them
   const from = addDays(rangeFrom, -CONTEXT_DAYS);
-  const [w, l, allW, m, s, r, p] = await Promise.all([
+  const [w, l, allW, m, s, r, z, p] = await Promise.all([
     fetchAll((a, b) =>
       sb
         .from("workout_days")
@@ -121,15 +170,25 @@ export async function loadRange(rangeFrom: string, to: string) {
         .lte("date", to)
         .range(a, b)
     ),
-    fetchAll((a, b) => sb.from("daily_logs").select("date, weight_kg, bed_time, wake_time").gte("date", from).lte("date", to).range(a, b)),
+    fetchAll((a, b) => sb.from("daily_logs").select("date, weight_kg").gte("date", from).lte("date", to).range(a, b)),
     fetchAll((a, b) => sb.from("daily_logs").select("date, weight_kg").not("weight_kg", "is", null).order("date").range(a, b)),
     fetchAll((a, b) => sb.from("meal_items").select("date, quantity, foods(*)").gte("date", from).lte("date", to).range(a, b)),
     fetchAll((a, b) => sb.from("sport_sessions").select("date, sport, minutes, intensity").gte("date", from).lte("date", to).range(a, b)),
     fetchAll((a, b) => sb.from("runs").select("date, seconds, distance, distance_unit").gte("date", from).lte("date", to).range(a, b)),
+    fetchAll((a, b) =>
+      sb
+        .from("sleep_sessions")
+        .select(SLEEP_COLUMNS)
+        // a day wider each side (UTC): the local date decides which day a sleep belongs to
+        .gte("wake_at", addDays(from, -1))
+        .lt("wake_at", addDays(to, 2))
+        .order("bed_at")
+        .range(a, b)
+    ),
     loadProfile(),
   ]);
 
-  const error = [w, l, allW, m, s, r].find((x) => x.error)?.error?.message ?? p.error;
+  const error = [w, l, allW, m, s, r, z].find((x) => x.error)?.error?.message ?? p.error;
   const profile = p.profile;
 
   const weights = (allW.data as { date: string; weight_kg: number }[]).map((x) => ({ date: x.date, kg: Number(x.weight_kg) }));
@@ -149,9 +208,7 @@ export async function loadRange(rangeFrom: string, to: string) {
       baseline: null,
       balance: null,
       sleepMin: null,
-      inBedMin: null,
-      fallAsleepMin: null,
-      bedTime: null,
+      nights: [],
       weightKg: null,
     };
   }
@@ -167,13 +224,11 @@ export async function loadRange(rangeFrom: string, to: string) {
     d.exerciseKcal += weightTrainingKcal(row.duration_min == null ? null : Number(row.duration_min), t.sets + t.coreSets, kgOn(row.date));
   }
 
-  type LRow = { date: string; weight_kg: number | null; bed_time: string | null; wake_time: string | null };
+  type LRow = { date: string; weight_kg: number | null };
   for (const row of l.data as LRow[]) {
     const d = days[row.date];
     if (!d) continue;
     d.weightKg = row.weight_kg == null ? null : Number(row.weight_kg);
-    d.inBedMin = sleepMinutes(row.bed_time, row.wake_time);
-    d.bedTime = row.bed_time ? row.bed_time.slice(0, 5) : null;
   }
 
   type MRow = { date: string; quantity: number; foods: Record<string, unknown> | null };
@@ -207,15 +262,7 @@ export async function loadRange(rangeFrom: string, to: string) {
     if (d.intake != null && d.baseline != null) d.balance = d.intake - d.baseline - d.exerciseKcal;
   }
 
-  // nights in date order: each estimate uses the night before it
-  const goal = readSleepGoal();
-  for (const date of datesBetween(from, to)) {
-    const d = days[date];
-    if (d.inBedMin == null || !d.bedTime) continue;
-    const { minutes } = estimateLatency(d.bedTime, sleepContextFor(date, days, goal));
-    d.fallAsleepMin = minutes;
-    d.sleepMin = asleepMinutes(d.inBedMin, minutes);
-  }
+  addNights((z.data as SleepRow[]).map(toSession), days, readSleepGoal());
   for (const date of Object.keys(days)) if (date < rangeFrom) delete days[date];
 
   return { days, profile, hasWeight, error };

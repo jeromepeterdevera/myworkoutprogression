@@ -135,7 +135,7 @@ export default function CalendarPage() {
       return [
         { label: "Avg sleep", value: a == null ? "–" : formatDuration(a) },
         { label: "Shortest", value: ss.length ? formatDuration(Math.min(...ss)) : "–" },
-        { label: "Nights logged", value: String(ss.length) },
+        { label: "Days logged", value: String(ss.length) },
       ];
     }
 
@@ -233,7 +233,7 @@ export default function CalendarPage() {
             return (
               <Link
                 key={iso}
-                href={`/day/${iso}`}
+                href={view === "sleep" ? `/sleep?date=${iso}` : `/day/${iso}`}
                 className={`flex min-h-[84px] min-w-0 flex-col gap-0.5 border-b border-r border-zinc-100 p-1 text-left transition hover:bg-zinc-50 sm:min-h-[100px] sm:p-1.5 ${
                   inMonth ? "" : "bg-zinc-50/70 text-zinc-400"
                 }`}

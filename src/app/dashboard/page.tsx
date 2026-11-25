@@ -9,7 +9,8 @@ import { useDisplayUnit } from "@/lib/useDisplayUnit";
 import { DaySummary, loadRange } from "@/lib/daily";
 import { MEALS_ENABLED } from "@/lib/features";
 import { profileComplete } from "@/lib/activity";
-import { formatDuration } from "@/lib/sleep";
+import SleepTimeline from "@/components/SleepTimeline";
+import { clockStats, formatClock, formatDuration, fromMinutes, mainSleep, toMinutes, wallTime } from "@/lib/sleep";
 import { convert, parseISODate, toISODate } from "@/lib/workout";
 
 // validated palette (dataviz reference slots 1 & 2, diverging blue/red) on a white surface
@@ -75,6 +76,9 @@ export default function DashboardPage() {
   const tiles = useMemo(() => {
     const ws = days.flatMap((d) => (d.weightKg != null ? [convert(d.weightKg, "kg", unit)] : []));
     const sleep = days.flatMap((d) => (d.sleepMin != null ? [d.sleepMin] : []));
+    const mains = days.flatMap((d) => mainSleep(d.nights) ?? []);
+    const beds = clockStats(mains.map((m) => toMinutes(wallTime(m.bed))));
+    const wakes = clockStats(mains.map((m) => toMinutes(wallTime(m.wake))));
     const eaten = days.flatMap((d) => (d.intake != null ? [d.intake] : []));
     const protein = days.flatMap((d) => (d.protein != null ? [d.protein] : []));
     const burn = days.flatMap((d) => {
@@ -91,6 +95,9 @@ export default function DashboardPage() {
       weighIns: ws.length,
       sleep: avg(sleep),
       nights: sleep.length,
+      mains: mains.length,
+      beds,
+      wakes,
       eaten: avg(eaten),
       protein: avg(protein),
       burn: avg(burn),
@@ -181,7 +188,17 @@ export default function DashboardPage() {
             value={tiles.weight == null ? "–" : tiles.weight.toFixed(1)}
             sub={tiles.weightChange == null ? `${tiles.weighIns} weigh-ins` : `${signed(tiles.weightChange, 1)} ${unit} this period`}
           />
-          <Tile label="Avg sleep" value={tiles.sleep == null ? "–" : formatDuration(tiles.sleep)} sub={`${tiles.nights} nights logged`} />
+          <Tile label="Avg sleep" value={tiles.sleep == null ? "–" : formatDuration(tiles.sleep)} sub={`${tiles.nights} days logged`} />
+          <Tile
+            label="Avg bedtime"
+            value={tiles.beds == null ? "–" : formatClock(fromMinutes(tiles.beds.mean))}
+            sub={tiles.beds == null || tiles.mains < 2 ? "needs 2 nights" : `varies ±${formatDuration(tiles.beds.spread)}`}
+          />
+          <Tile
+            label="Avg wake time"
+            value={tiles.wakes == null ? "–" : formatClock(fromMinutes(tiles.wakes.mean))}
+            sub={tiles.wakes == null || tiles.mains < 2 ? "needs 2 nights" : `varies ±${formatDuration(tiles.wakes.spread)}`}
+          />
           {MEALS_ENABLED && <Tile
             label="Avg eaten / day"
             value={tiles.eaten == null ? "–" : `${kcal(tiles.eaten)} kcal`}
@@ -209,6 +226,14 @@ export default function DashboardPage() {
             series={[{ name: "Sleep", color: BLUE, values: chart.sleep, kind: "bar" }]}
             format={(v) => formatDuration(v * 60)}
             refLine={tiles.sleep != null ? { value: tiles.sleep / 60, label: `avg ${formatDuration(tiles.sleep)}` } : undefined}
+          />
+        </ChartCard>
+
+        <ChartCard title={range > 30 ? "Sleep schedule (last 30 days)" : "Sleep schedule"} note="Edit sleeps on the Sleep page">
+          <SleepTimeline
+            dates={days.slice(-30).map((d) => d.date).reverse()}
+            nights={days.flatMap((d) => d.nights)}
+            totals={Object.fromEntries(days.map((d) => [d.date, d.sleepMin]))}
           />
         </ChartCard>
 
