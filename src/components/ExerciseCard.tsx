@@ -3,6 +3,8 @@
 import { useState } from "react";
 import NumInput from "./NumInput";
 import UnitToggle from "./UnitToggle";
+import { MuscleEditor } from "./MuscleChips";
+import { Muscle, muscleLabel } from "@/lib/muscles";
 import { Verdict, verdict } from "@/lib/effort";
 import { ExerciseEntry, Mode, SetEntry, Unit, convert, formatSet, parseISODate } from "@/lib/workout";
 
@@ -26,6 +28,8 @@ export default function ExerciseCard({
   onRemove,
   onMove,
   onSetDone,
+  muscles,
+  onMuscles,
   isFirst,
   isLast,
 }: {
@@ -40,12 +44,16 @@ export default function ExerciseCard({
   onMove: (dir: -1 | 1) => void;
   /** a set was ticked off (starts the rest timer) */
   onSetDone?: () => void;
+  /** muscles this exercise works; shown and editable when onMuscles is given */
+  muscles?: Muscle[];
+  onMuscles?: (m: Muscle[]) => void;
   isFirst: boolean;
   isLast: boolean;
 }) {
   const isTime = entry.mode === "time";
   const complete = entry.sets.length > 0 && entry.sets.every((s) => isDone(s, entry.mode));
   const [open, setOpen] = useState(!complete);
+  const [editMuscles, setEditMuscles] = useState(false);
 
   const lastSets = last && last.mode === entry.mode ? last.sets : [];
   const fromLast = (s: SetEntry): SetEntry => ({
@@ -150,7 +158,29 @@ export default function ExerciseCard({
           </div>
         )}
         {!isTime && <UnitToggle small unit={entry.unit} onChange={changeUnit} />}
+        {onMuscles && !editMuscles && (
+          <button
+            type="button"
+            onClick={() => setEditMuscles(true)}
+            className={`rounded-full px-2 py-0.5 text-xs ${
+              muscles?.length ? "bg-zinc-100 text-zinc-700 hover:bg-zinc-200" : "bg-amber-100 font-medium text-amber-900"
+            }`}
+            aria-label={muscles?.length ? `Muscles: ${muscles.map(muscleLabel).join(", ")}. Edit` : "Tag the muscles this works"}
+          >
+            {muscles?.length ? <>{muscles.map(muscleLabel).join(" · ")} ✎</> : "Tag muscles"}
+          </button>
+        )}
       </div>
+      {onMuscles && editMuscles && (
+        <MuscleEditor
+          initial={muscles ?? []}
+          onCancel={() => setEditMuscles(false)}
+          onSave={(m) => {
+            onMuscles(m);
+            setEditMuscles(false);
+          }}
+        />
+      )}
 
       {last ? (
         <p className="mt-2 rounded-md bg-amber-50 px-2 py-1.5 text-xs text-amber-900">

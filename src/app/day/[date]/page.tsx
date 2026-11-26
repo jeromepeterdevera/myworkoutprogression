@@ -9,6 +9,8 @@ import UnitToggle from "@/components/UnitToggle";
 import NumInput from "@/components/NumInput";
 import ExerciseCard from "@/components/ExerciseCard";
 import ExercisePicker, { HistoryItem } from "@/components/ExercisePicker";
+import MusclePicker, { RecentSession } from "@/components/MusclePicker";
+import { Muscle, TYPE_MUSCLES, toMuscles } from "@/lib/muscles";
 import MealsTab from "@/components/MealsTab";
 import { MEALS_ENABLED } from "@/lib/features";
 import SportsTab from "@/components/SportsTab";
@@ -52,7 +54,7 @@ interface RawRow {
   mode: Mode;
   sets: SetEntry[];
   exercises: { name: string } | null;
-  workout_days?: { date: string; type: WorkoutType | null } | null;
+  workout_days?: { date: string; type: WorkoutType | null; effort: number | null } | null;
 }
 
 interface MealRow {
@@ -115,6 +117,9 @@ export default function DayPage() {
   const [durationMin, setDurationMin] = useState<number | null>(null);
   const [effort, setEffort] = useState<number | null>(null);
   const [liftHist, setLiftHist] = useState<LiftHistory>(new Map());
+  // muscles per exercise (lower-case name) and earlier sessions, for the add-exercises panel
+  const [tags, setTags] = useState<Map<string, Muscle[]>>(new Map());
+  const [sessions, setSessions] = useState<RecentSession[]>([]);
   // rest timer: when the last set was ticked off
   const [lastSetAt, setLastSetAt] = useState<number | null>(null);
   const [now, setNow] = useState(() => Date.now());
@@ -206,6 +211,7 @@ export default function DayPage() {
     const runsReq = sb.from("runs").select("seconds, distance, distance_unit, position").eq("date", date);
     const pastSportsReq = sb.from("sport_sessions").select("sport").order("date", { ascending: false }).limit(500);
     const profileReq = loadProfile();
+    const tagsReq = sb.from("exercises").select("name, muscles");
 
     // all previous workout sessions (paged, Supabase returns max 1000 rows per request)
     const histRows: RawRow[] = [];
@@ -213,7 +219,7 @@ export default function DayPage() {
     for (let from = 0; ; from += PAGE) {
       const { data, error } = await sb
         .from("day_exercises")
-        .select("section, unit, mode, sets, exercises(name), workout_days!inner(date, type)")
+        .select("section, position, unit, mode, sets, exercises(name), workout_days!inner(date, type, effort)")
         .lt("workout_days.date", date)
         .range(from, from + PAGE - 1);
       if (error) {
@@ -224,7 +230,7 @@ export default function DayPage() {
       if (!data || data.length < PAGE) break;
     }
 
-    const [dayRes, logRes, prevWRes, foodsRes, mealsRes, prevMealRes, sportsRes, runsRes, pastSportsRes, profileRes] =
+    const [dayRes, logRes, prevWRes, foodsRes, mealsRes, prevMealRes, sportsRes, runsRes, pastSportsRes, profileRes, tagsRes] =
       await Promise.all([
         dayReq,
         logReq,
@@ -236,8 +242,9 @@ export default function DayPage() {
         runsReq,
         pastSportsReq,
         profileReq,
+        tagsReq,
       ]);
-    for (const r of [dayRes, logRes, prevWRes, foodsRes, mealsRes, prevMealRes, sportsRes, runsRes, pastSportsRes]) {
+    for (const r of [dayRes, logRes, prevWRes, foodsRes, mealsRes, prevMealRes, sportsRes, runsRes, pastSportsRes, tagsRes]) {
       if (r.error) errors.push(r.error.message);
     }
     if (profileRes.error) errors.push(profileRes.error);
@@ -252,16 +259,42 @@ export default function DayPage() {
       const key = name.toLowerCase();
       let h = map.get(key);
       if (!h) {
-        h = { name, types: new Set(), sections: new Set(), last: null };
+        h = { name, types: new Set(), sections: new Set(), last: null, recent: [] };
         map.set(key, h);
       }
       if (wd.type) h.types.add(wd.type);
       h.sections.add(r.section);
       const sets = (r.sets ?? []).filter(hasData);
-      if (sets.length && (!h.last || wd.date > h.last.date)) {
-        h.last = { date: wd.date, unit: r.unit, mode: r.mode, sets };
-      }
+      if (sets.length) h.recent.push({ date: wd.date, unit: r.unit, mode: r.mode, sets });
     }
+    for (const h of map.values()) {
+      h.recent = h.recent.sort((a, b) => b.date.localeCompare(a.date)).slice(0, 3);
+      h.last = h.recent[0] ?? null;
+    }
+
+    // earlier days with their main exercises, newest first
+    const byDate = new Map<string, { s: RecentSession; pos: Map<string, number> }>();
+    for (const r of histRows) {
+      const wd = r.workout_days;
+      const name = r.exercises?.name;
+      if (!wd || !name || r.section !== "main" || !(r.sets ?? []).some(hasData)) continue;
+      let d = byDate.get(wd.date);
+      if (!d) {
+        d = { s: { date: wd.date, type: wd.type, effort: wd.effort, names: [] }, pos: new Map() };
+        byDate.set(wd.date, d);
+      }
+      d.s.names.push(name);
+      d.pos.set(name, r.position ?? 0);
+    }
+    setSessions(
+      [...byDate.values()]
+        .sort((a, b) => b.s.date.localeCompare(a.s.date))
+        .slice(0, 60)
+        .map(({ s: x, pos }) => ({ ...x, names: [...x.names].sort((a, b) => pos.get(a)! - pos.get(b)!) }))
+    );
+    setTags(
+      new Map(((tagsRes.data ?? []) as { name: string; muscles: unknown }[]).map((t) => [t.name.toLowerCase(), toMuscles(t.muscles)]))
+    );
     setHistory([...map.values()].sort((a, b) => (b.last?.date ?? "").localeCompare(a.last?.date ?? "")));
     const lh: LiftHistory = new Map();
     for (const r of [...histRows].sort((a, b) => (a.workout_days?.date ?? "").localeCompare(b.workout_days?.date ?? ""))) {
@@ -380,6 +413,23 @@ export default function DayPage() {
       }
       return [...prev, ...added];
     });
+  };
+
+  /** Saves an exercise's muscles right away (they belong to the exercise, not the day). */
+  const tagExercise = async (name: string, muscles: Muscle[]) => {
+    const key = name.trim().toLowerCase();
+    const before = tags.get(key);
+    setTags((prev) => new Map(prev).set(key, muscles));
+    const { error } = await supabase().rpc("set_exercise_muscles", { p_name: name.trim(), p_muscles: muscles });
+    if (error) {
+      setTags((prev) => {
+        const next = new Map(prev);
+        if (before) next.set(key, before);
+        else next.delete(key);
+        return next;
+      });
+      setMessage({ kind: "err", text: `Couldn't save muscles: ${error.message}` });
+    }
   };
 
   const updateItem = (key: string, next: ExerciseEntry) => change((prev) => prev.map((p) => (p.key === key ? next : p)));
@@ -573,11 +623,8 @@ export default function DayPage() {
   const info = typeInfo(type);
   const showMain = (type && type !== "rest") || mainItems.length > 0;
 
-  const mainCandidates = useMemo(() => {
-    if (!type || type === "rest") return [];
-    const taken = new Set(mainItems.map((i) => i.name.toLowerCase()));
-    return history.filter((h) => h.sections.has("main") && h.types.has(type) && !taken.has(h.name.toLowerCase()));
-  }, [history, type, mainItems]);
+  const mainCandidates = useMemo(() => history.filter((h) => h.sections.has("main")), [history]);
+  const mainTaken = useMemo(() => new Set(mainItems.map((i) => i.name.toLowerCase())), [mainItems]);
 
   const coreCandidates = useMemo(() => {
     const taken = new Set(coreItems.map((i) => i.name.toLowerCase()));
@@ -875,6 +922,8 @@ export default function DayPage() {
                     bestKg={bestBefore(liftHist, it.name)}
                     displayUnit={displayUnit}
                     onSetDone={() => setLastSetAt(Date.now())}
+                    muscles={tags.get(it.name.toLowerCase()) ?? []}
+                    onMuscles={(m) => tagExercise(it.name, m)}
                     onChange={(n) => updateItem(it.key, n)}
                     onRemove={() => removeItem(it.key)}
                     onMove={(d) => moveItem(it.key, d)}
@@ -886,13 +935,23 @@ export default function DayPage() {
 
               {type && type !== "rest" && (
                 <div className={mainItems.length ? "mt-3" : ""}>
-                  <ExercisePicker
-                    title={`From previous ${info?.label} days`}
+                  <MusclePicker
+                    type={type}
+                    date={date}
+                    dayMuscles={TYPE_MUSCLES[type]}
                     candidates={mainCandidates}
+                    tags={tags}
+                    sessions={sessions}
+                    taken={mainTaken}
+                    displayUnit={displayUnit}
                     allNames={allNames}
                     defaultOpen={mainItems.length === 0}
                     onAdd={(names) => addExercises(names, "main")}
-                    onAddNew={(name, unit) => addExercises([name], "main", { unit, mode: "reps" })}
+                    onAddNew={(name, unit, muscles) => {
+                      tagExercise(name, muscles);
+                      addExercises([name], "main", { unit, mode: "reps" });
+                    }}
+                    onTag={tagExercise}
                   />
                 </div>
               )}

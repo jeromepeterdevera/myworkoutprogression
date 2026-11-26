@@ -125,6 +125,36 @@ $$;
 
 grant execute on function public.save_day(date, text, jsonb, numeric, int) to authenticated;
 
+-- Muscles each exercise works, tagged by you (an exercise can work several)
+alter table public.exercises add column if not exists muscles text[] not null default '{}'
+  check (muscles <@ array['chest','back','shoulders','biceps','triceps','forearms','quads','hamstrings','glutes','calves']::text[]);
+
+-- Sets an exercise's muscles, creating the exercise if it doesn't exist yet.
+create or replace function public.set_exercise_muscles(p_name text, p_muscles text[])
+returns void
+language plpgsql
+security invoker
+as $$
+declare
+  v_name text := btrim(p_name);
+begin
+  if auth.uid() is null then
+    raise exception 'not signed in';
+  end if;
+  if v_name is null or v_name = '' then
+    raise exception 'exercise name is empty';
+  end if;
+
+  update public.exercises set muscles = coalesce(p_muscles, '{}')
+    where user_id = auth.uid() and lower(name) = lower(v_name);
+  if not found then
+    insert into public.exercises (user_id, name, muscles) values (auth.uid(), v_name, coalesce(p_muscles, '{}'));
+  end if;
+end;
+$$;
+
+grant execute on function public.set_exercise_muscles(text, text[]) to authenticated;
+
 -- ============================================================
 -- Daily log (morning weight + last night's sleep), foods and meals
 -- ============================================================

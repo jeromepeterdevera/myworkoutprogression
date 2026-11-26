@@ -11,7 +11,16 @@ This is a calendar log for workouts, meals, weight and sleep, built with Next.js
 - **Workout tab:** three sub-tabs, so you can log any mix of them on the same day. Each shows an estimate of calories burned.
   - **How hard was today's training?** Rate the day 1–10. Load = effort × minutes trained (weights, sports and runs together). If you don't rate a day, the effort is estimated: lifting from how your work on each exercise compares with your last 4 sessions of it, sports from the intensity you picked, runs from your speed.
   - **Weight Training:**
-    - Pick the type: Push, Pull, Legs, Upper Body, Lower Body or Rest. Choosing a type lists every exercise you've done on that type, with your most recent numbers, ready to tick and add.
+    - Pick the type: Push, Pull, Legs, Upper Body, Lower Body or Rest. Each type trains a set of muscles:
+      - Push: chest, shoulders, triceps
+      - Pull: back, biceps, forearms
+      - Upper Body: all six of those
+      - Legs / Lower Body: quads, hamstrings, glutes, calves
+    - You tag each exercise with the muscles it works (one or more), once. Tags are saved with the exercise. Tap the tags on an exercise card to change them.
+    - **Add exercises** then shows:
+      - **Repeat a recent session:** your last 3 days that hit those muscles, whatever type the day was. For example, an Upper day's chest and triceps lifts count on a Push day. **Select these** ticks them all.
+      - **By muscle:** every tagged exercise for those muscles. Each shows when you last did it, your top set, sets, volume and the trend over your last 3 sessions. Filter by one muscle with the chips.
+      - **Exercises without muscles:** listed so you can tag them.
     - Last time's numbers appear in grey in each set. Tap **✓** to log the set as shown, or type or use **− / +** to change it first. Ticking a set starts a rest timer.
     - A summary bar stays at the top: sets done, minutes, effort and new bests. Finished exercises fold into one line.
     - Each exercise says how it went vs last time: **New best** (estimated one-rep max), **+2.5 kg vs last**, **+1 rep vs last** or **Same as last**.

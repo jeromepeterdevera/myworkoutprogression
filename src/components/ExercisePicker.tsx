@@ -9,6 +9,8 @@ export interface HistoryItem {
   types: Set<WorkoutType>;
   sections: Set<Section>;
   last: { date: string; unit: Unit; mode: Mode; sets: SetEntry[] } | null;
+  /** up to 3 most recent sessions with numbers, newest first (recent[0] is last) */
+  recent: { date: string; unit: Unit; mode: Mode; sets: SetEntry[] }[];
 }
 
 export default function ExercisePicker({
