@@ -4,19 +4,21 @@ import { useState } from "react";
 import NumInput from "./NumInput";
 import UnitToggle from "./UnitToggle";
 import { MuscleEditor } from "./MuscleChips";
-import { Muscle, muscleLabel } from "@/lib/muscles";
+import { Muscle, Tag, isTagged, tagText } from "@/lib/muscles";
 import { Verdict, verdict } from "@/lib/effort";
-import { ExerciseEntry, Mode, SetEntry, Unit, convert, formatSet, parseISODate } from "@/lib/workout";
-
-interface Last {
-  date: string;
-  unit: Unit;
-  mode: Mode;
-  sets: SetEntry[];
-}
+import {
+  ExerciseEntry,
+  LastSession,
+  SetEntry,
+  Unit,
+  fillSet,
+  formatSet,
+  isSetDone as isDone,
+  parseISODate,
+  suggestedSet,
+} from "@/lib/workout";
 
 const EMPTY: SetEntry = { reps: null, weight: null, seconds: null };
-const isDone = (s: SetEntry, mode: Mode) => (mode === "time" ? !!s.seconds : !!s.reps);
 
 export default function ExerciseCard({
   entry,
@@ -28,13 +30,14 @@ export default function ExerciseCard({
   onRemove,
   onMove,
   onSetDone,
-  muscles,
+  tag,
   onMuscles,
+  onStartCircuit,
   isFirst,
   isLast,
 }: {
   entry: ExerciseEntry;
-  last: Last | null;
+  last: LastSession | null;
   /** best estimated one-rep max before this day, kg (0 if none) */
   bestKg: number;
   displayUnit: Unit;
@@ -45,8 +48,10 @@ export default function ExerciseCard({
   /** a set was ticked off (starts the rest timer) */
   onSetDone?: () => void;
   /** muscles this exercise works; shown and editable when onMuscles is given */
-  muscles?: Muscle[];
+  tag?: Tag;
   onMuscles?: (m: Muscle[]) => void;
+  /** turn this exercise into a circuit you can add more exercises to */
+  onStartCircuit?: () => void;
   isFirst: boolean;
   isLast: boolean;
 }) {
@@ -55,28 +60,14 @@ export default function ExerciseCard({
   const [open, setOpen] = useState(!complete);
   const [editMuscles, setEditMuscles] = useState(false);
 
-  const lastSets = last && last.mode === entry.mode ? last.sets : [];
-  const fromLast = (s: SetEntry): SetEntry => ({
-    ...s,
-    weight: s.weight && last!.unit !== entry.unit ? Math.round(convert(s.weight, last!.unit, entry.unit) * 10) / 10 : s.weight,
-  });
-  /** Suggested values for set i: the same set last time, else the set above, else last time's final set. */
-  const ghostFor = (i: number): SetEntry | null => {
-    if (lastSets[i]) return fromLast(lastSets[i]);
-    for (let j = i - 1; j >= 0; j--) if (isDone(entry.sets[j], entry.mode)) return entry.sets[j];
-    return lastSets.length ? fromLast(lastSets[lastSets.length - 1]) : null;
-  };
+  const ghostFor = (i: number) => suggestedSet(entry, last, i);
 
   const setSet = (i: number, patch: Partial<SetEntry>) =>
     onChange({ ...entry, sets: entry.sets.map((s, j) => (j === i ? { ...s, ...patch } : s)) });
 
   /** ✓: fill whatever is empty from the suggestion. */
   const tick = (i: number) => {
-    const s = entry.sets[i];
-    const g = ghostFor(i);
-    const filled: SetEntry = isTime
-      ? { ...s, seconds: s.seconds ?? g?.seconds ?? null }
-      : { ...s, reps: s.reps ?? g?.reps ?? null, weight: s.weight ?? g?.weight ?? null };
+    const filled = fillSet(entry.sets[i], ghostFor(i), entry.mode);
     if (!isDone(filled, entry.mode)) return;
     const sets = entry.sets.map((x, j) => (j === i ? filled : x));
     onChange({ ...entry, sets });
@@ -129,6 +120,11 @@ export default function ExerciseCard({
               ⌃
             </IconBtn>
           )}
+          {onStartCircuit && (
+            <IconBtn label="Make a circuit with this exercise" onClick={onStartCircuit}>
+              ↻
+            </IconBtn>
+          )}
           <IconBtn label="Move up" disabled={isFirst} onClick={() => onMove(-1)}>↑</IconBtn>
           <IconBtn label="Move down" disabled={isLast} onClick={() => onMove(1)}>↓</IconBtn>
           <IconBtn
@@ -162,18 +158,21 @@ export default function ExerciseCard({
           <button
             type="button"
             onClick={() => setEditMuscles(true)}
-            className={`rounded-full px-2 py-0.5 text-xs ${
-              muscles?.length ? "bg-zinc-100 text-zinc-700 hover:bg-zinc-200" : "bg-amber-100 font-medium text-amber-900"
+            className={`rounded-full px-2 py-0.5 text-left text-xs ${
+              tag && isTagged(tag) && !tag.legacy.length
+                ? "bg-zinc-100 text-zinc-700 hover:bg-zinc-200"
+                : "bg-amber-100 font-medium text-amber-900"
             }`}
-            aria-label={muscles?.length ? `Muscles: ${muscles.map(muscleLabel).join(", ")}. Edit` : "Tag the muscles this works"}
+            aria-label={tag && isTagged(tag) ? `Muscles: ${tagText(tag)}. Edit` : "Tag the muscles this works"}
           >
-            {muscles?.length ? <>{muscles.map(muscleLabel).join(" · ")} ✎</> : "Tag muscles"}
+            {tag && isTagged(tag) ? <>{tagText(tag)} ✎</> : "Tag muscles"}
           </button>
         )}
       </div>
       {onMuscles && editMuscles && (
         <MuscleEditor
-          initial={muscles ?? []}
+          initial={tag?.muscles ?? []}
+          legacy={tag?.legacy}
           onCancel={() => setEditMuscles(false)}
           onSave={(m) => {
             onMuscles(m);
@@ -284,7 +283,7 @@ export default function ExerciseCard({
   );
 }
 
-function VerdictChip({ v }: { v: Verdict }) {
+export function VerdictChip({ v }: { v: Verdict }) {
   const style =
     v.tone === "best"
       ? "bg-amber-100 text-amber-900"
@@ -347,7 +346,7 @@ function Stepper({
   );
 }
 
-function IconBtn({
+export function IconBtn({
   children,
   onClick,
   disabled,

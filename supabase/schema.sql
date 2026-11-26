@@ -61,6 +61,9 @@ create policy "own day exercises" on public.day_exercises
 --             "sets": [{ "reps": 10, "weight": 40, "seconds": null }] }]
 -- Weight-training duration in minutes (optional; used for the calorie-burn estimate)
 alter table public.workout_days add column if not exists duration_min numeric check (duration_min > 0);
+-- Exercises done back to back as a circuit / superset share a number (within the day); null = straight sets.
+-- In a circuit, set 1 of each exercise is round 1, set 2 is round 2, and so on.
+alter table public.day_exercises add column if not exists circuit smallint check (circuit >= 0);
 -- How hard the day's training felt, 1-10 (optional; covers weights, sports and runs)
 alter table public.workout_days add column if not exists effort smallint check (effort between 1 and 10);
 
@@ -109,14 +112,15 @@ begin
       returning id into v_ex_id;
     end if;
 
-    insert into public.day_exercises (user_id, day_id, exercise_id, section, position, unit, mode, sets)
+    insert into public.day_exercises (user_id, day_id, exercise_id, section, position, unit, mode, sets, circuit)
     values (
       auth.uid(), v_day_id, v_ex_id,
       coalesce(v_item->>'section', 'main'),
       v_pos,
       coalesce(v_item->>'unit', 'kg'),
       coalesce(v_item->>'mode', 'reps'),
-      coalesce(v_item->'sets', '[]'::jsonb)
+      coalesce(v_item->'sets', '[]'::jsonb),
+      nullif(v_item->>'circuit', '')::smallint
     );
     v_pos := v_pos + 1;
   end loop;
@@ -125,9 +129,19 @@ $$;
 
 grant execute on function public.save_day(date, text, jsonb, numeric, int) to authenticated;
 
--- Muscles each exercise works, tagged by you (an exercise can work several)
-alter table public.exercises add column if not exists muscles text[] not null default '{}'
-  check (muscles <@ array['chest','back','shoulders','biceps','triceps','forearms','quads','hamstrings','glutes','calves']::text[]);
+-- Muscles each exercise works, tagged by you (an exercise can work several).
+-- 'chest', 'back' and 'shoulders' are older broad tags; the app asks you to pick the specific part.
+alter table public.exercises add column if not exists muscles text[] not null default '{}';
+alter table public.exercises drop constraint if exists exercises_muscles_check;
+alter table public.exercises add constraint exercises_muscles_check check (muscles <@ array[
+  'upper_chest','middle_chest','lower_chest',
+  'front_delts','side_delts','rear_delts',
+  'traps','rhomboids','lats',
+  'upper_abs','lower_abs','obliques',
+  'biceps','triceps','forearms',
+  'glutes','quads','hamstrings','calves',
+  'chest','back','shoulders'
+]::text[]);
 
 -- Sets an exercise's muscles, creating the exercise if it doesn't exist yet.
 create or replace function public.set_exercise_muscles(p_name text, p_muscles text[])

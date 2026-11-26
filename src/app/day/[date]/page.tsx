@@ -8,9 +8,9 @@ import { useDisplayUnit } from "@/lib/useDisplayUnit";
 import UnitToggle from "@/components/UnitToggle";
 import NumInput from "@/components/NumInput";
 import ExerciseCard from "@/components/ExerciseCard";
-import ExercisePicker, { HistoryItem } from "@/components/ExercisePicker";
-import MusclePicker, { RecentSession } from "@/components/MusclePicker";
-import { Muscle, TYPE_MUSCLES, toMuscles } from "@/lib/muscles";
+import CircuitCard from "@/components/CircuitCard";
+import MusclePicker, { HistoryItem, RecentSession } from "@/components/MusclePicker";
+import { CORE_MUSCLES, Muscle, NO_TAG, TYPE_MUSCLES, Tag, toTag } from "@/lib/muscles";
 import MealsTab from "@/components/MealsTab";
 import { MEALS_ENABLED } from "@/lib/features";
 import SportsTab from "@/components/SportsTab";
@@ -42,7 +42,9 @@ import {
   dayTotals,
   formatSeconds,
   newKey,
+  blockItems,
   parseISODate,
+  toBlocks,
   toISODate,
   typeInfo,
 } from "@/lib/workout";
@@ -53,6 +55,7 @@ interface RawRow {
   unit: Unit;
   mode: Mode;
   sets: SetEntry[];
+  circuit?: number | null;
   exercises: { name: string } | null;
   workout_days?: { date: string; type: WorkoutType | null; effort: number | null } | null;
 }
@@ -118,8 +121,8 @@ export default function DayPage() {
   const [effort, setEffort] = useState<number | null>(null);
   const [liftHist, setLiftHist] = useState<LiftHistory>(new Map());
   // muscles per exercise (lower-case name) and earlier sessions, for the add-exercises panel
-  const [tags, setTags] = useState<Map<string, Muscle[]>>(new Map());
-  const [sessions, setSessions] = useState<RecentSession[]>([]);
+  const [tags, setTags] = useState<Map<string, Tag>>(new Map());
+  const [sessions, setSessions] = useState<Record<Section, RecentSession[]>>({ main: [], core: [] });
   // rest timer: when the last set was ticked off
   const [lastSetAt, setLastSetAt] = useState<number | null>(null);
   const [now, setNow] = useState(() => Date.now());
@@ -186,7 +189,7 @@ export default function DayPage() {
 
     const dayReq = sb
       .from("workout_days")
-      .select("type, duration_min, effort, day_exercises(section, position, unit, mode, sets, exercises(name))")
+      .select("type, duration_min, effort, day_exercises(section, position, unit, mode, sets, circuit, exercises(name))")
       .eq("date", date)
       .maybeSingle();
     const logReq = sb.from("daily_logs").select("weight_kg, bed_time, wake_time").eq("date", date).maybeSingle();
@@ -219,7 +222,7 @@ export default function DayPage() {
     for (let from = 0; ; from += PAGE) {
       const { data, error } = await sb
         .from("day_exercises")
-        .select("section, position, unit, mode, sets, exercises(name), workout_days!inner(date, type, effort)")
+        .select("section, position, unit, mode, sets, circuit, exercises(name), workout_days!inner(date, type, effort)")
         .lt("workout_days.date", date)
         .range(from, from + PAGE - 1);
       if (error) {
@@ -252,6 +255,15 @@ export default function DayPage() {
 
     // build history: per exercise, most recent session (any workout type) + which types/sections it was done in
     const map = new Map<string, HistoryItem>();
+    // exercises done together in a circuit: "date|section|circuit" -> names with positions
+    const circuitKey = (r: RawRow) => (r.circuit == null || !r.workout_days ? null : `${r.workout_days.date}|${r.section}|${r.circuit}`);
+    const circuitRows = new Map<string, { name: string; pos: number }[]>();
+    for (const r of histRows) {
+      const k = circuitKey(r);
+      if (!k || !r.exercises?.name) continue;
+      circuitRows.set(k, [...(circuitRows.get(k) ?? []), { name: r.exercises.name, pos: r.position ?? 0 }]);
+    }
+    const lastGroup = new Map<string, { date: string; key: string | null }>();
     for (const r of histRows) {
       const name = r.exercises?.name;
       const wd = r.workout_days;
@@ -259,42 +271,52 @@ export default function DayPage() {
       const key = name.toLowerCase();
       let h = map.get(key);
       if (!h) {
-        h = { name, types: new Set(), sections: new Set(), last: null, recent: [] };
+        h = { name, types: new Set(), sections: new Set(), last: null, recent: [], lastCircuit: null };
         map.set(key, h);
       }
       if (wd.type) h.types.add(wd.type);
       h.sections.add(r.section);
       const sets = (r.sets ?? []).filter(hasData);
       if (sets.length) h.recent.push({ date: wd.date, unit: r.unit, mode: r.mode, sets });
+      const lg = lastGroup.get(key);
+      if (sets.length && (!lg || wd.date > lg.date)) lastGroup.set(key, { date: wd.date, key: circuitKey(r) });
     }
-    for (const h of map.values()) {
+    for (const [key, h] of map) {
       h.recent = h.recent.sort((a, b) => b.date.localeCompare(a.date)).slice(0, 3);
       h.last = h.recent[0] ?? null;
+      const g = lastGroup.get(key)?.key;
+      const mates = g ? circuitRows.get(g) : null;
+      h.lastCircuit = mates && mates.length > 1 ? [...mates].sort((a, b) => a.pos - b.pos).map((m) => m.name) : null;
     }
 
-    // earlier days with their main exercises, newest first
-    const byDate = new Map<string, { s: RecentSession; pos: Map<string, number> }>();
-    for (const r of histRows) {
-      const wd = r.workout_days;
-      const name = r.exercises?.name;
-      if (!wd || !name || r.section !== "main" || !(r.sets ?? []).some(hasData)) continue;
-      let d = byDate.get(wd.date);
-      if (!d) {
-        d = { s: { date: wd.date, type: wd.type, effort: wd.effort, names: [] }, pos: new Map() };
-        byDate.set(wd.date, d);
+    // earlier days with their exercises per section, newest first
+    const sessionsOf = (section: Section) => {
+      const byDate = new Map<string, { s: RecentSession; pos: Map<string, number> }>();
+      for (const r of histRows) {
+        const wd = r.workout_days;
+        const name = r.exercises?.name;
+        if (!wd || !name || r.section !== section || !(r.sets ?? []).some(hasData)) continue;
+        let d = byDate.get(wd.date);
+        if (!d) {
+          d = { s: { date: wd.date, type: wd.type, effort: wd.effort, names: [], circuits: [] }, pos: new Map() };
+          byDate.set(wd.date, d);
+        }
+        d.s.names.push(name);
+        d.pos.set(name, r.position ?? 0);
       }
-      d.s.names.push(name);
-      d.pos.set(name, r.position ?? 0);
-    }
-    setSessions(
-      [...byDate.values()]
+      return [...byDate.values()]
         .sort((a, b) => b.s.date.localeCompare(a.s.date))
         .slice(0, 60)
-        .map(({ s: x, pos }) => ({ ...x, names: [...x.names].sort((a, b) => pos.get(a)! - pos.get(b)!) }))
-    );
-    setTags(
-      new Map(((tagsRes.data ?? []) as { name: string; muscles: unknown }[]).map((t) => [t.name.toLowerCase(), toMuscles(t.muscles)]))
-    );
+        .map(({ s: x, pos }) => ({
+          ...x,
+          names: [...x.names].sort((a, b) => pos.get(a)! - pos.get(b)!),
+          circuits: [...circuitRows.entries()]
+            .filter(([k, v]) => k.startsWith(`${x.date}|${section}|`) && v.length > 1)
+            .map(([, v]) => [...v].sort((a, b) => a.pos - b.pos).map((m) => m.name)),
+        }));
+    };
+    setSessions({ main: sessionsOf("main"), core: sessionsOf("core") });
+    setTags(new Map(((tagsRes.data ?? []) as { name: string; muscles: unknown }[]).map((t) => [t.name.toLowerCase(), toTag(t.muscles)])));
     setHistory([...map.values()].sort((a, b) => (b.last?.date ?? "").localeCompare(a.last?.date ?? "")));
     const lh: LiftHistory = new Map();
     for (const r of [...histRows].sort((a, b) => (a.workout_days?.date ?? "").localeCompare(b.workout_days?.date ?? ""))) {
@@ -318,6 +340,7 @@ export default function DayPage() {
         unit: r.unit,
         mode: r.mode,
         sets: r.sets ?? [],
+        circuit: r.circuit ?? null,
       }))
     );
 
@@ -391,7 +414,32 @@ export default function DayPage() {
     return m;
   }, [history]);
 
-  const addExercises = (names: string[], section: Section, opts?: { unit?: Unit; mode?: Mode }) => {
+  const nextCircuitId = (list: ExerciseEntry[]) => Math.max(0, ...list.map((i) => (i.circuit ?? -1) + 1));
+  const rounds = (list: ExerciseEntry[]) => Math.max(1, ...list.map((i) => i.sets.length));
+  const padTo = (e: ExerciseEntry, n: number): ExerciseEntry =>
+    e.sets.length >= n ? e : { ...e, sets: [...e.sets, ...Array.from({ length: n - e.sets.length }, () => ({ reps: null, weight: null, seconds: null }))] };
+
+  /** A new exercise entry with one empty set per set you did last time. */
+  const newEntry = (name: string, section: Section, opts?: { unit?: Unit; mode?: Mode }): ExerciseEntry => {
+    const h = historyByName.get(name.toLowerCase());
+    const last = h?.last;
+    return {
+      key: newKey(),
+      name: h?.name ?? name,
+      section,
+      unit: last?.unit ?? opts?.unit ?? "kg",
+      mode: last?.mode ?? opts?.mode ?? "reps",
+      // last time's numbers show as suggestions, ✓ copies them
+      sets: (last?.sets.length ? last.sets : [null]).map(() => ({ reps: null, weight: null, seconds: null })),
+      circuit: null,
+    };
+  };
+
+  /**
+   * Adds exercises. With asCircuit they become one new circuit; otherwise exercises you last did
+   * together in a circuit are put back into a circuit, in the same order.
+   */
+  const addExercises = (names: string[], section: Section, opts?: { unit?: Unit; mode?: Mode }, asCircuit = false) => {
     change((prev) => {
       const existing = new Set(prev.filter((p) => p.section === section).map((p) => p.name.toLowerCase()));
       const added: ExerciseEntry[] = [];
@@ -399,27 +447,85 @@ export default function DayPage() {
         const name = raw.trim();
         if (!name || existing.has(name.toLowerCase())) continue;
         existing.add(name.toLowerCase());
-        const h = historyByName.get(name.toLowerCase());
-        const last = h?.last;
-        added.push({
-          key: newKey(),
-          name: h?.name ?? name,
-          section,
-          unit: last?.unit ?? opts?.unit ?? "kg",
-          mode: last?.mode ?? opts?.mode ?? "reps",
-          // one empty set per set last time; last time's numbers show as suggestions, ✓ copies them
-          sets: (last?.sets.length ? last.sets : [null]).map(() => ({ reps: null, weight: null, seconds: null })),
-        });
+        added.push(newEntry(name, section, opts));
       }
-      return [...prev, ...added];
+      let id = nextCircuitId(prev);
+      if (asCircuit && added.length) {
+        const n = rounds(added);
+        return [...prev, ...added.map((e) => padTo({ ...e, circuit: id }, n))];
+      }
+      const byName = new Map(added.map((e) => [e.name.toLowerCase(), e]));
+      const out: ExerciseEntry[] = [];
+      const placed = new Set<string>();
+      for (const e of added) {
+        const k = e.name.toLowerCase();
+        if (placed.has(k)) continue;
+        const mates = (historyByName.get(k)?.lastCircuit ?? []).map((n) => byName.get(n.toLowerCase())).filter((x): x is ExerciseEntry => !!x);
+        if (mates.length > 1) {
+          const n = rounds(mates);
+          for (const m of mates) {
+            out.push(padTo({ ...m, circuit: id }, n));
+            placed.add(m.name.toLowerCase());
+          }
+          id++;
+        } else {
+          out.push(e);
+          placed.add(k);
+        }
+      }
+      return [...prev, ...out];
     });
   };
+
+  // ---------- blocks (single exercises and circuits) ----------
+  /** Replaces one section's exercises, keeping the other section as it is. */
+  const withSection = (prev: ExerciseEntry[], section: Section, list: ExerciseEntry[]) =>
+    section === "main" ? [...list, ...prev.filter((p) => p.section !== "main")] : [...prev.filter((p) => p.section !== "core"), ...list];
+
+  const moveBlock = (section: Section, index: number, dir: -1 | 1) =>
+    change((prev) => {
+      const blocks = toBlocks(prev.filter((p) => p.section === section));
+      const j = index + dir;
+      if (j < 0 || j >= blocks.length) return prev;
+      [blocks[index], blocks[j]] = [blocks[j], blocks[index]];
+      return withSection(prev, section, blocks.flatMap(blockItems));
+    });
+
+  const startCircuit = (key: string) =>
+    change((prev) => {
+      const id = nextCircuitId(prev);
+      return prev.map((p) => (p.key === key ? { ...p, circuit: id } : p));
+    });
+  const splitCircuit = (id: number, section: Section) =>
+    change((prev) => prev.map((p) => (p.section === section && p.circuit === id ? { ...p, circuit: null } : p)));
+  const removeCircuit = (id: number, section: Section) => change((prev) => prev.filter((p) => !(p.section === section && p.circuit === id)));
+  const updateMany = (next: ExerciseEntry[]) =>
+    change((prev) => {
+      const m = new Map(next.map((n) => [n.key, n]));
+      return prev.map((p) => m.get(p.key) ?? p);
+    });
+
+  /** Adds an exercise to a circuit; one already on this day moves in, keeping what you logged. */
+  const addToCircuit = (id: number, section: Section, name: string, mode: Mode) =>
+    change((prev) => {
+      const members = prev.filter((p) => p.section === section && p.circuit === id);
+      const n = rounds(members);
+      const existing = prev.find((p) => p.section === section && p.name.toLowerCase() === name.toLowerCase());
+      if (existing?.circuit === id) return prev;
+      const entry = padTo(existing ? { ...existing, circuit: id } : { ...newEntry(name, section, { mode, unit: displayUnit }), circuit: id }, n);
+      const rest = prev.filter((p) => p.key !== existing?.key);
+      const at = rest.findLastIndex((p) => p.section === section && p.circuit === id);
+      // a longer exercise moving in adds rounds to the others
+      const all = [...rest.slice(0, at + 1), entry, ...rest.slice(at + 1)];
+      const total = Math.max(n, entry.sets.length);
+      return all.map((p) => (p.section === section && p.circuit === id ? padTo(p, total) : p));
+    });
 
   /** Saves an exercise's muscles right away (they belong to the exercise, not the day). */
   const tagExercise = async (name: string, muscles: Muscle[]) => {
     const key = name.trim().toLowerCase();
     const before = tags.get(key);
-    setTags((prev) => new Map(prev).set(key, muscles));
+    setTags((prev) => new Map(prev).set(key, { muscles, legacy: [] }));
     const { error } = await supabase().rpc("set_exercise_muscles", { p_name: name.trim(), p_muscles: muscles });
     if (error) {
       setTags((prev) => {
@@ -434,18 +540,6 @@ export default function DayPage() {
 
   const updateItem = (key: string, next: ExerciseEntry) => change((prev) => prev.map((p) => (p.key === key ? next : p)));
   const removeItem = (key: string) => change((prev) => prev.filter((p) => p.key !== key));
-  const moveItem = (key: string, dir: -1 | 1) =>
-    change((prev) => {
-      const list = [...prev];
-      const i = list.findIndex((p) => p.key === key);
-      const section = list[i].section;
-      let j = i + dir;
-      while (j >= 0 && j < list.length && list[j].section !== section) j += dir;
-      if (j < 0 || j >= list.length) return prev;
-      [list[i], list[j]] = [list[j], list[i]];
-      return list;
-    });
-
   const pickType = (t: WorkoutType) => {
     setType((cur) => (cur === t ? null : t));
     markDirty("workout");
@@ -626,10 +720,8 @@ export default function DayPage() {
   const mainCandidates = useMemo(() => history.filter((h) => h.sections.has("main")), [history]);
   const mainTaken = useMemo(() => new Set(mainItems.map((i) => i.name.toLowerCase())), [mainItems]);
 
-  const coreCandidates = useMemo(() => {
-    const taken = new Set(coreItems.map((i) => i.name.toLowerCase()));
-    return history.filter((h) => h.sections.has("core") && !taken.has(h.name.toLowerCase()));
-  }, [history, coreItems]);
+  const coreTaken = useMemo(() => new Set(coreItems.map((i) => i.name.toLowerCase())), [coreItems]);
+  const coreCandidates = useMemo(() => history.filter((h) => h.sections.has("core")), [history]);
 
   const allNames = useMemo(() => history.map((h) => h.name), [history]);
 
@@ -652,6 +744,57 @@ export default function DayPage() {
   const training = trainingFor({ type, durationMin, exercises: items, sports, runs, rated: effort }, liftHist);
   const setsPlanned = items.reduce((a, i) => a + i.sets.length, 0);
   const restSec = lastSetAt == null ? null : Math.max(0, Math.floor((now - lastSetAt) / 1000));
+
+  /** A section's exercises as cards: one per single exercise, one per circuit. */
+  const renderBlocks = (section: Section) => {
+    const blocks = toBlocks(section === "main" ? mainItems : coreItems);
+    return (
+      <div className="space-y-3">
+        {blocks.map((b, idx) =>
+          b.kind === "single" ? (
+            <ExerciseCard
+              key={b.item.key}
+              entry={b.item}
+              last={historyByName.get(b.item.name.toLowerCase())?.last ?? null}
+              bestKg={bestBefore(liftHist, b.item.name)}
+              displayUnit={displayUnit}
+              allowMode={section === "core"}
+              onSetDone={() => setLastSetAt(Date.now())}
+              tag={tags.get(b.item.name.toLowerCase()) ?? NO_TAG}
+              onMuscles={(m) => tagExercise(b.item.name, m)}
+              onStartCircuit={() => startCircuit(b.item.key)}
+              onChange={(n) => updateItem(b.item.key, n)}
+              onRemove={() => removeItem(b.item.key)}
+              onMove={(d) => moveBlock(section, idx, d)}
+              isFirst={idx === 0}
+              isLast={idx === blocks.length - 1}
+            />
+          ) : (
+            <CircuitCard
+              key={`circuit-${b.id}`}
+              items={b.items}
+              lastOf={(n) => historyByName.get(n.toLowerCase())?.last ?? null}
+              bestOf={(n) => bestBefore(liftHist, n)}
+              tagOf={(n) => tags.get(n.toLowerCase()) ?? NO_TAG}
+              displayUnit={displayUnit}
+              allowMode={section === "core"}
+              allNames={allNames}
+              onItems={updateMany}
+              onAddExercise={(name, mode) => addToCircuit(b.id, section, name, mode)}
+              onRemoveExercise={removeItem}
+              onSplit={() => splitCircuit(b.id, section)}
+              onRemove={() => removeCircuit(b.id, section)}
+              onMove={(d) => moveBlock(section, idx, d)}
+              onSetDone={() => setLastSetAt(Date.now())}
+              onTag={tagExercise}
+              isFirst={idx === 0}
+              isLast={idx === blocks.length - 1}
+            />
+          )
+        )}
+      </div>
+    );
+  };
 
   if (loading) {
     return <div className="flex min-h-dvh items-center justify-center text-zinc-400">Loading…</div>;
@@ -913,43 +1056,24 @@ export default function DayPage() {
               </h2>
 
               {/* exercises first, the add panel after them: a new exercise lands right above the panel */}
-              <div className="space-y-3">
-                {mainItems.map((it, idx) => (
-                  <ExerciseCard
-                    key={it.key}
-                    entry={it}
-                    last={historyByName.get(it.name.toLowerCase())?.last ?? null}
-                    bestKg={bestBefore(liftHist, it.name)}
-                    displayUnit={displayUnit}
-                    onSetDone={() => setLastSetAt(Date.now())}
-                    muscles={tags.get(it.name.toLowerCase()) ?? []}
-                    onMuscles={(m) => tagExercise(it.name, m)}
-                    onChange={(n) => updateItem(it.key, n)}
-                    onRemove={() => removeItem(it.key)}
-                    onMove={(d) => moveItem(it.key, d)}
-                    isFirst={idx === 0}
-                    isLast={idx === mainItems.length - 1}
-                  />
-                ))}
-              </div>
+              {renderBlocks("main")}
 
               {type && type !== "rest" && (
                 <div className={mainItems.length ? "mt-3" : ""}>
                   <MusclePicker
-                    type={type}
                     date={date}
                     dayMuscles={TYPE_MUSCLES[type]}
                     candidates={mainCandidates}
                     tags={tags}
-                    sessions={sessions}
+                    sessions={sessions.main}
                     taken={mainTaken}
                     displayUnit={displayUnit}
                     allNames={allNames}
                     defaultOpen={mainItems.length === 0}
-                    onAdd={(names) => addExercises(names, "main")}
-                    onAddNew={(name, unit, muscles) => {
+                    onAdd={(names, asCircuit) => addExercises(names, "main", undefined, asCircuit)}
+                    onAddNew={(name, unit, mode, muscles) => {
                       tagExercise(name, muscles);
-                      addExercises([name], "main", { unit, mode: "reps" });
+                      addExercises([name], "main", { unit, mode });
                     }}
                     onTag={tagExercise}
                   />
@@ -963,33 +1087,25 @@ export default function DayPage() {
             <h2 className="mb-2 flex items-center gap-2 text-lg font-semibold">
               <span className="rounded bg-teal-100 px-1.5 text-xs font-bold text-teal-700">CORE</span> Core session
             </h2>
-            <div className="space-y-3">
-              {coreItems.map((it, idx) => (
-                <ExerciseCard
-                  key={it.key}
-                  entry={it}
-                  last={historyByName.get(it.name.toLowerCase())?.last ?? null}
-                  bestKg={bestBefore(liftHist, it.name)}
-                  displayUnit={displayUnit}
-                  onSetDone={() => setLastSetAt(Date.now())}
-                  allowMode
-                  onChange={(n) => updateItem(it.key, n)}
-                  onRemove={() => removeItem(it.key)}
-                  onMove={(d) => moveItem(it.key, d)}
-                  isFirst={idx === 0}
-                  isLast={idx === coreItems.length - 1}
-                />
-              ))}
-            </div>
+            {renderBlocks("core")}
             <div className={coreItems.length ? "mt-3" : ""}>
-              <ExercisePicker
-                title="Previous core exercises"
+              <MusclePicker
+                date={date}
+                dayMuscles={CORE_MUSCLES}
                 candidates={coreCandidates}
+                tags={tags}
+                sessions={sessions.core}
+                taken={coreTaken}
+                displayUnit={displayUnit}
                 allNames={allNames}
                 defaultOpen={false}
                 allowMode
-                onAdd={(names) => addExercises(names, "core")}
-                onAddNew={(name, unit, mode) => addExercises([name], "core", { unit, mode })}
+                onAdd={(names, asCircuit) => addExercises(names, "core", undefined, asCircuit)}
+                onAddNew={(name, unit, mode, muscles) => {
+                  tagExercise(name, muscles);
+                  addExercises([name], "core", { unit, mode });
+                }}
+                onTag={tagExercise}
               />
             </div>
           </section>

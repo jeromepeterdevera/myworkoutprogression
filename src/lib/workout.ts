@@ -29,7 +29,59 @@ export interface ExerciseEntry {
   unit: Unit;
   mode: Mode;
   sets: SetEntry[];
+  /** exercises with the same number are done back to back as a circuit; set i is round i+1 */
+  circuit: number | null;
 }
+
+export interface LastSession {
+  date: string;
+  unit: Unit;
+  mode: Mode;
+  sets: SetEntry[];
+}
+
+/** A set counts as done once it has reps (or seconds, when timed). */
+export const isSetDone = (s: SetEntry, mode: Mode) => (mode === "time" ? !!s.seconds : !!s.reps);
+
+/**
+ * Suggested values for set i: the same set last time, else the set above (this session),
+ * else last time's final set. Weights are converted to the exercise's unit.
+ */
+export function suggestedSet(entry: Pick<ExerciseEntry, "unit" | "mode" | "sets">, last: LastSession | null, i: number): SetEntry | null {
+  const lastSets = last && last.mode === entry.mode ? last.sets : [];
+  const fromLast = (s: SetEntry): SetEntry => ({
+    ...s,
+    weight: s.weight && last!.unit !== entry.unit ? Math.round(convert(s.weight, last!.unit, entry.unit) * 10) / 10 : s.weight,
+  });
+  if (lastSets[i]) return fromLast(lastSets[i]);
+  for (let j = i - 1; j >= 0; j--) if (isSetDone(entry.sets[j], entry.mode)) return entry.sets[j];
+  return lastSets.length ? fromLast(lastSets[lastSets.length - 1]) : null;
+}
+
+/** Fill a set's empty fields from the suggestion. */
+export function fillSet(s: SetEntry, g: SetEntry | null, mode: Mode): SetEntry {
+  return mode === "time"
+    ? { ...s, seconds: s.seconds ?? g?.seconds ?? null }
+    : { ...s, reps: s.reps ?? g?.reps ?? null, weight: s.weight ?? g?.weight ?? null };
+}
+
+export type Block =
+  | { kind: "single"; item: ExerciseEntry }
+  | { kind: "circuit"; id: number; items: ExerciseEntry[] };
+
+/** Groups a section's exercises into blocks: neighbours with the same circuit number form one circuit. */
+export function toBlocks(items: ExerciseEntry[]): Block[] {
+  const out: Block[] = [];
+  for (const it of items) {
+    const prev = out[out.length - 1];
+    if (it.circuit != null && prev?.kind === "circuit" && prev.id === it.circuit) prev.items.push(it);
+    else if (it.circuit != null) out.push({ kind: "circuit", id: it.circuit, items: [it] });
+    else out.push({ kind: "single", item: it });
+  }
+  return out;
+}
+
+export const blockItems = (b: Block) => (b.kind === "single" ? [b.item] : b.items);
 
 export interface DayExerciseRow {
   section: Section;

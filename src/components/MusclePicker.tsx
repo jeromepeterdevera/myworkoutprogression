@@ -3,17 +3,42 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import UnitToggle from "./UnitToggle";
 import MuscleChips, { MuscleEditor } from "./MuscleChips";
-import { HistoryItem } from "./ExercisePicker";
 import { workOf } from "@/lib/effort";
-import { Muscle, muscleLabel } from "@/lib/muscles";
-import { Unit, WorkoutType, convert, exerciseVolume, formatNumber, formatSet, parseISODate, typeInfo } from "@/lib/workout";
+import { Group, Muscle, NO_TAG, Tag, covered, groupLabel, groupsOf, isTagged, muscleLabel, partsOf, tagText } from "@/lib/muscles";
+import {
+  Mode,
+  Section,
+  SetEntry,
+  Unit,
+  WorkoutType,
+  convert,
+  exerciseVolume,
+  formatNumber,
+  formatSet,
+  parseISODate,
+  typeInfo,
+} from "@/lib/workout";
+
+/** An exercise from your history. */
+export interface HistoryItem {
+  name: string;
+  types: Set<WorkoutType>;
+  sections: Set<Section>;
+  last: { date: string; unit: Unit; mode: Mode; sets: SetEntry[] } | null;
+  /** up to 3 most recent sessions with numbers, newest first (recent[0] is last) */
+  recent: { date: string; unit: Unit; mode: Mode; sets: SetEntry[] }[];
+  /** the exercises it was done with in a circuit last time (itself included, in order), or null */
+  lastCircuit: string[] | null;
+}
 
 export interface RecentSession {
   date: string;
   type: WorkoutType | null;
   effort: number | null;
-  /** main exercises, in the order done */
+  /** exercises in this section, in the order done */
   names: string[];
+  /** exercises done together as circuits */
+  circuits: string[][];
 }
 
 const shortDate = (iso: string) => parseISODate(iso).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
@@ -24,11 +49,10 @@ function daysAgo(iso: string, today: string) {
 }
 
 /**
- * Add exercises for a workout type, by the muscles it trains: recent sessions that hit those muscles
- * (whatever type the day was), then every matching exercise grouped by muscle with your last numbers.
+ * Add exercises by the muscles the day trains: recent sessions that hit those muscles (whatever
+ * type the day was), then every matching exercise grouped by muscle group with your last numbers.
  */
 export default function MusclePicker({
-  type,
   date,
   dayMuscles,
   candidates,
@@ -38,17 +62,17 @@ export default function MusclePicker({
   displayUnit,
   allNames,
   defaultOpen,
+  allowMode,
   onAdd,
   onAddNew,
   onTag,
 }: {
-  type: WorkoutType;
   date: string;
   dayMuscles: Muscle[];
-  /** exercises you've logged in the main section before, newest first */
+  /** exercises you've logged in this section before, newest first */
   candidates: HistoryItem[];
-  /** muscles per exercise, by lower-case name */
-  tags: Map<string, Muscle[]>;
+  /** tags per exercise, by lower-case name */
+  tags: Map<string, Tag>;
   /** earlier days, newest first */
   sessions: RecentSession[];
   /** lower-case names already on this day */
@@ -56,17 +80,22 @@ export default function MusclePicker({
   displayUnit: Unit;
   allNames: string[];
   defaultOpen: boolean;
-  onAdd: (names: string[]) => void;
-  onAddNew: (name: string, unit: Unit, muscles: Muscle[]) => void;
+  /** new exercises can be timed (core) */
+  allowMode?: boolean;
+  /** asCircuit: add them as one circuit */
+  onAdd: (names: string[], asCircuit: boolean) => void;
+  onAddNew: (name: string, unit: Unit, mode: Mode, muscles: Muscle[]) => void;
   onTag: (name: string, muscles: Muscle[]) => void;
 }) {
   const [open, setOpen] = useState(defaultOpen);
   const [checked, setChecked] = useState<Set<string>>(new Set());
-  const [filter, setFilter] = useState<Muscle | null>(null);
+  const [group, setGroup] = useState<Group | null>(null);
+  const [part, setPart] = useState<Muscle | null>(null);
   const [tagging, setTagging] = useState<string | null>(null);
   const [showUntagged, setShowUntagged] = useState(false);
   const [newName, setNewName] = useState("");
   const [newUnit, setNewUnit] = useState<Unit>("kg");
+  const [newMode, setNewMode] = useState<Mode>("reps");
   const [newMuscles, setNewMuscles] = useState<Muscle[]>([]);
   const listId = useId();
   const panel = useRef<HTMLDivElement>(null);
@@ -76,10 +105,15 @@ export default function MusclePicker({
   useEffect(() => {
     if (defaultOpen) setOpen(true);
   }, [defaultOpen]);
-  useEffect(() => setFilter(null), [type]);
+  const dayKey = dayMuscles.join(",");
+  useEffect(() => {
+    setGroup(null);
+    setPart(null);
+  }, [dayKey]);
 
-  const musclesOf = (name: string) => tags.get(name.toLowerCase()) ?? [];
-  const hits = (name: string) => musclesOf(name).some((m) => dayMuscles.includes(m));
+  const tagOf = (name: string) => tags.get(name.toLowerCase()) ?? NO_TAG;
+  /** the day's muscles this exercise works */
+  const hitsOf = (name: string) => covered(tagOf(name)).filter((m) => dayMuscles.includes(m));
 
   const available = useMemo(() => candidates.filter((c) => !taken.has(c.name.toLowerCase())), [candidates, taken]);
   const byName = useMemo(() => new Map(available.map((c) => [c.name.toLowerCase(), c])), [available]);
@@ -92,18 +126,20 @@ export default function MusclePicker({
     });
   }, [byName]);
 
-  const matching = available.filter((c) => hits(c.name));
-  const untagged = available
-    .filter((c) => !musclesOf(c.name).length)
-    // ones done on this type of day first
-    .sort((a, b) => Number(b.types.has(type)) - Number(a.types.has(type)));
-  const shownMuscles = filter ? [filter] : dayMuscles;
-  const groups = shownMuscles
-    .map((m) => ({ muscle: m, items: matching.filter((c) => musclesOf(c.name).includes(m)) }))
-    .filter((g) => g.items.length);
+  const matching = available.filter((c) => hitsOf(c.name).length);
+  // never tagged, or tagged with an old broad group that needs a part
+  const needsTag = available
+    .filter((c) => !isTagged(tagOf(c.name)) || tagOf(c.name).legacy.length)
+    .sort((a, b) => Number(isTagged(tagOf(b.name))) - Number(isTagged(tagOf(a.name))));
+
+  const dayGroups = groupsOf(dayMuscles);
+  const focus = part ? [part] : group ? partsOf(group).filter((m) => dayMuscles.includes(m)) : dayMuscles;
+  const sections = groupsOf(focus)
+    .map((g) => ({ group: g, items: matching.filter((c) => hitsOf(c.name).some((m) => focus.includes(m) && partsOf(g).includes(m))) }))
+    .filter((s) => s.items.length);
 
   const recent = sessions
-    .map((s) => ({ ...s, match: s.names.filter(hits) }))
+    .map((s) => ({ ...s, match: s.names.filter((n) => hitsOf(n).length) }))
     .filter((s) => s.match.length)
     .slice(0, 3);
 
@@ -128,9 +164,11 @@ export default function MusclePicker({
     });
   };
 
-  const addSelected = () => {
-    // in the order they were last done, newest first, as listed
-    onAdd(available.filter((c) => checked.has(c.name.toLowerCase())).map((c) => c.name));
+  const addSelected = (asCircuit = false) => {
+    onAdd(
+      available.filter((c) => checked.has(c.name.toLowerCase())).map((c) => c.name),
+      asCircuit
+    );
     setChecked(new Set());
     keepInView();
   };
@@ -138,14 +176,16 @@ export default function MusclePicker({
   const addNew = (e: React.FormEvent) => {
     e.preventDefault();
     if (!newName.trim() || !newMuscles.length) return;
-    onAddNew(newName.trim(), newUnit, newMuscles);
+    onAddNew(newName.trim(), newUnit, newMode, newMuscles);
     setNewName("");
     setNewMuscles([]);
     keepInView();
   };
 
-  // an existing exercise typed in the new-exercise box keeps its tags
   const typedKnown = tags.get(newName.trim().toLowerCase());
+  const chip = (on: boolean) =>
+    `rounded-full px-2.5 py-1 text-xs font-medium ${on ? "bg-zinc-900 text-white" : "bg-zinc-100 text-zinc-700 hover:bg-zinc-200"}`;
+  const untaggedOpen = showUntagged || !matching.length;
 
   return (
     <div ref={panel} className="scroll-mb-24 rounded-xl border border-zinc-200 bg-white">
@@ -156,7 +196,9 @@ export default function MusclePicker({
       >
         <span>
           + Add exercises
-          <span className="ml-2 font-normal text-zinc-500">{matching.length ? `${matching.length} for ${dayMuscles.map(muscleLabel).join(", ").toLowerCase()}` : ""}</span>
+          <span className="ml-2 font-normal text-zinc-500">
+            {matching.length ? `${matching.length} for ${dayGroups.map(groupLabel).join(", ").toLowerCase()}` : ""}
+          </span>
         </span>
         <span className="text-zinc-400">{open ? "▲" : "▼"}</span>
       </button>
@@ -196,12 +238,19 @@ export default function MusclePicker({
                         </button>
                       </div>
                       <p className="mt-1 text-xs text-zinc-600">
-                        {s.match.map((n, i) => (
-                          <span key={n} className={byName.has(n.toLowerCase()) ? "" : "text-zinc-400 line-through"}>
-                            {i > 0 && ", "}
-                            {n}
-                          </span>
-                        ))}
+                        {s.match.map((n, i) => {
+                          const c = s.circuits.find((x) => x.includes(n));
+                          const first = c && s.match.find((m) => c.includes(m)) === n;
+                          const lastOne = c && [...s.match].reverse().find((m) => c.includes(m)) === n;
+                          return (
+                            <span key={n}>
+                              {i > 0 && (c && !first ? " + " : ", ")}
+                              {first && <span className="text-indigo-600">↻ (</span>}
+                              <span className={byName.has(n.toLowerCase()) ? "" : "text-zinc-400 line-through"}>{n}</span>
+                              {lastOne && <span className="text-indigo-600">)</span>}
+                            </span>
+                          );
+                        })}
                         {extra > 0 && <span className="text-zinc-400"> (+{extra} for other muscles)</span>}
                       </p>
                     </li>
@@ -213,39 +262,52 @@ export default function MusclePicker({
 
           {/* by muscle */}
           <section>
-            <div className="mb-1.5 flex items-center justify-between gap-2">
-              <h3 className="text-xs font-medium uppercase tracking-wide text-zinc-500">By muscle</h3>
-            </div>
-            {dayMuscles.length > 1 && (
-              <div className="mb-2 flex flex-wrap gap-1.5">
-                {[null, ...dayMuscles].map((m) => (
+            <h3 className="mb-1.5 text-xs font-medium uppercase tracking-wide text-zinc-500">By muscle</h3>
+            {dayGroups.length > 1 && (
+              <div className="mb-1.5 flex flex-wrap gap-1.5">
+                {[null, ...dayGroups].map((g) => (
                   <button
-                    key={m ?? "all"}
+                    key={g ?? "all"}
                     type="button"
-                    onClick={() => setFilter(m)}
-                    aria-pressed={filter === m}
-                    className={`rounded-full px-2.5 py-1 text-xs font-medium ${
-                      filter === m ? "bg-zinc-900 text-white" : "bg-zinc-100 text-zinc-700 hover:bg-zinc-200"
-                    }`}
+                    aria-pressed={group === g}
+                    onClick={() => {
+                      setGroup(g);
+                      setPart(null);
+                    }}
+                    className={chip(group === g)}
                   >
-                    {m ? muscleLabel(m) : "All"}
+                    {g ? groupLabel(g) : "All"}
                   </button>
                 ))}
               </div>
             )}
+            {(() => {
+              const parts = dayGroups.length > 1 ? (group ? partsOf(group).filter((m) => dayMuscles.includes(m)) : []) : dayMuscles;
+              if (parts.length < 2) return null;
+              return (
+                <div className="mb-2 flex flex-wrap gap-1.5 border-l-2 border-zinc-200 pl-2">
+                  {[null, ...parts].map((m) => (
+                    <button key={m ?? "any"} type="button" aria-pressed={part === m} onClick={() => setPart(m)} className={chip(part === m)}>
+                      {m ? muscleLabel(m) : `Any ${group ? groupLabel(group).toLowerCase() : "part"}`}
+                    </button>
+                  ))}
+                </div>
+              );
+            })()}
 
-            {groups.length ? (
+            {sections.length ? (
               <div className="max-h-[28rem] overflow-y-auto">
-                {groups.map((g) => (
-                  <div key={g.muscle} className="mb-2">
+                {sections.map((sec) => (
+                  <div key={sec.group} className="mb-2">
                     <div className="sticky top-0 bg-white py-1 text-[11px] font-semibold uppercase tracking-wide text-zinc-700">
-                      {muscleLabel(g.muscle)}
+                      {groupLabel(sec.group)}
                     </div>
                     <ul className="divide-y divide-zinc-100">
-                      {g.items.map((c) => (
+                      {sec.items.map((c) => (
                         <CandidateRow
                           key={c.name}
                           item={c}
+                          tag={tagOf(c.name)}
                           today={date}
                           unit={displayUnit}
                           checked={checked.has(c.name.toLowerCase())}
@@ -259,23 +321,41 @@ export default function MusclePicker({
             ) : (
               <p className="py-1 text-sm text-zinc-500">
                 {available.length
-                  ? `No tagged exercises for ${shownMuscles.map(muscleLabel).join(", ").toLowerCase()} yet. Tag your exercises below, or add a new one.`
+                  ? `No tagged exercises for ${(part ? [muscleLabel(part)] : (group ? [group] : dayGroups).map(groupLabel)).join(", ").toLowerCase()} yet. Tag your exercises below, or add a new one.`
                   : "Nothing else from history to add. Add a new exercise below."}
               </p>
             )}
           </section>
 
-          <button
-            type="button"
-            disabled={checked.size === 0}
-            onClick={addSelected}
-            className="mt-2 w-full rounded-lg bg-zinc-900 py-2.5 text-sm font-medium text-white disabled:opacity-30"
-          >
-            Add selected ({checked.size})
-          </button>
+          <div className="mt-2 flex gap-2">
+            <button
+              type="button"
+              disabled={checked.size === 0}
+              onClick={() => addSelected()}
+              className="flex-1 rounded-lg bg-zinc-900 py-2.5 text-sm font-medium text-white disabled:opacity-30"
+            >
+              Add selected ({checked.size})
+            </button>
+            {checked.size > 1 && (
+              <button
+                type="button"
+                onClick={() => addSelected(true)}
+                className="shrink-0 rounded-lg border border-indigo-300 bg-indigo-50 px-3 py-2.5 text-sm font-medium text-indigo-800"
+                title="Add them as one circuit, done back to back"
+              >
+                ↻ As circuit
+              </button>
+            )}
+          </div>
+          {checked.size > 1 && (
+            <p className="mt-1 text-[11px] text-zinc-500">
+              Exercises you last did together in a circuit go back into one automatically. ↻ As circuit puts all the selected ones into a
+              single circuit.
+            </p>
+          )}
 
-          {/* exercises without muscles yet */}
-          {untagged.length > 0 && (
+          {/* exercises that need tags */}
+          {needsTag.length > 0 && (
             <section className="mt-3 rounded-lg border border-amber-200 bg-amber-50/60 p-2.5">
               <button
                 type="button"
@@ -283,45 +363,53 @@ export default function MusclePicker({
                 className="flex w-full items-center justify-between text-left text-sm font-medium text-amber-900"
               >
                 <span>
-                  {untagged.length} exercise{untagged.length === 1 ? "" : "s"} without muscles
-                  <span className="block text-xs font-normal text-amber-800">Tag them once and they&apos;ll show up on the right days.</span>
+                  {needsTag.length} exercise{needsTag.length === 1 ? "" : "s"} to tag
+                  <span className="block text-xs font-normal text-amber-800">
+                    Tag the muscles once and they&apos;ll show up on the right days.
+                  </span>
                 </span>
-                <span className="text-amber-700">{showUntagged || !matching.length ? "▲" : "▼"}</span>
+                <span className="text-amber-700">{untaggedOpen ? "▲" : "▼"}</span>
               </button>
-              {(showUntagged || !matching.length) && (
+              {untaggedOpen && (
                 <ul className="mt-2 divide-y divide-amber-100">
-                  {untagged.map((c) => (
-                    <li key={c.name} className="py-2">
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="min-w-0">
-                          <span className="block text-sm font-medium">{c.name}</span>
-                          <span className="block text-xs text-zinc-500">
-                            {[...c.types].map((t) => typeInfo(t)?.label).filter(Boolean).join(", ") || "No type"}
-                            {c.last ? ` · last ${shortDate(c.last.date)}` : ""}
+                  {needsTag.map((c) => {
+                    const t = tagOf(c.name);
+                    return (
+                      <li key={c.name} className="py-2">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="min-w-0">
+                            <span className="block text-sm font-medium">{c.name}</span>
+                            <span className="block text-xs text-zinc-500">
+                              {isTagged(t)
+                                ? tagText(t)
+                                : [...c.types].map((x) => typeInfo(x)?.label).filter(Boolean).join(", ") || "Not tagged"}
+                              {c.last ? ` · last ${shortDate(c.last.date)}` : ""}
+                            </span>
                           </span>
-                        </span>
-                        {tagging !== c.name && (
-                          <button
-                            type="button"
-                            onClick={() => setTagging(c.name)}
-                            className="shrink-0 rounded-md border border-zinc-300 bg-white px-2.5 py-1 text-xs font-medium"
-                          >
-                            Tag
-                          </button>
+                          {tagging !== c.name && (
+                            <button
+                              type="button"
+                              onClick={() => setTagging(c.name)}
+                              className="shrink-0 rounded-md border border-zinc-300 bg-white px-2.5 py-1 text-xs font-medium"
+                            >
+                              Tag
+                            </button>
+                          )}
+                        </div>
+                        {tagging === c.name && (
+                          <MuscleEditor
+                            initial={t.muscles}
+                            legacy={t.legacy}
+                            onCancel={() => setTagging(null)}
+                            onSave={(m) => {
+                              onTag(c.name, m);
+                              setTagging(null);
+                            }}
+                          />
                         )}
-                      </div>
-                      {tagging === c.name && (
-                        <MuscleEditor
-                          initial={[]}
-                          onCancel={() => setTagging(null)}
-                          onSave={(m) => {
-                            onTag(c.name, m);
-                            setTagging(null);
-                          }}
-                        />
-                      )}
-                    </li>
-                  ))}
+                      </li>
+                    );
+                  })}
                 </ul>
               )}
             </section>
@@ -337,9 +425,9 @@ export default function MusclePicker({
                 onChange={(e) => {
                   setNewName(e.target.value);
                   const known = tags.get(e.target.value.trim().toLowerCase());
-                  if (known?.length) setNewMuscles(known);
+                  if (known?.muscles.length) setNewMuscles(known.muscles);
                 }}
-                placeholder="e.g. Incline Dumbbell Press"
+                placeholder={allowMode ? "e.g. Plank" : "e.g. Incline Dumbbell Press"}
                 className="min-w-0 flex-1 rounded-md border border-zinc-300 px-2 py-2 text-base outline-none focus:border-zinc-900"
               />
               <datalist id={listId}>
@@ -347,12 +435,26 @@ export default function MusclePicker({
                   <option key={n} value={n} />
                 ))}
               </datalist>
-              <UnitToggle unit={newUnit} onChange={setNewUnit} />
+              {allowMode && (
+                <div className="flex shrink-0 rounded-md border border-zinc-300 bg-white text-xs">
+                  {(["reps", "time"] as const).map((m) => (
+                    <button
+                      key={m}
+                      type="button"
+                      onClick={() => setNewMode(m)}
+                      className={`px-2 py-1 first:rounded-l-md last:rounded-r-md ${newMode === m ? "bg-zinc-900 text-white" : "text-zinc-600"}`}
+                    >
+                      {m === "reps" ? "Reps" : "Time"}
+                    </button>
+                  ))}
+                </div>
+              )}
+              {(!allowMode || newMode === "reps") && <UnitToggle unit={newUnit} onChange={setNewUnit} />}
             </div>
             <p className="mb-1.5 mt-2 text-xs text-zinc-600">
-              Muscles it works{typedKnown?.length ? " (saved before, change if needed)" : ""}:
+              Muscles it works{typedKnown?.muscles.length ? " (saved before, change if needed)" : ""}:
             </p>
-            <MuscleChips value={newMuscles} onChange={setNewMuscles} />
+            <MuscleChips value={newMuscles} onChange={setNewMuscles} highlight={typedKnown?.legacy} />
             <button
               type="submit"
               className="mt-2 w-full rounded-lg border border-zinc-900 py-2 text-sm font-medium text-zinc-900 disabled:opacity-30"
@@ -367,15 +469,17 @@ export default function MusclePicker({
   );
 }
 
-/** One exercise: last time's top set, sets, volume, and the trend over the last 3 sessions. */
+/** One exercise: its muscles, last time's top set, sets, volume, and the trend over the last 3 sessions. */
 function CandidateRow({
   item,
+  tag,
   today,
   unit,
   checked,
   onToggle,
 }: {
   item: HistoryItem;
+  tag: Tag;
   today: string;
   unit: Unit;
   checked: boolean;
@@ -388,7 +492,9 @@ function CandidateRow({
     vol = exerciseVolume(last, unit);
     if (last.mode === "time") top = formatSet(last.sets.reduce((a, s) => ((s.seconds ?? 0) > (a.seconds ?? 0) ? s : a)), "time", last.unit);
     else {
-      const best = last.sets.reduce((a, s) => ((s.weight ?? 0) > (a.weight ?? 0) || ((s.weight ?? 0) === (a.weight ?? 0) && (s.reps ?? 0) > (a.reps ?? 0)) ? s : a));
+      const best = last.sets.reduce((a, s) =>
+        (s.weight ?? 0) > (a.weight ?? 0) || ((s.weight ?? 0) === (a.weight ?? 0) && (s.reps ?? 0) > (a.reps ?? 0)) ? s : a
+      );
       top = best.weight
         ? `${Math.round(convert(best.weight, last.unit, unit) * 10) / 10} ${unit} × ${best.reps ?? "–"}`
         : `${best.reps ?? "–"} reps`;
@@ -399,8 +505,7 @@ function CandidateRow({
   let trend: "up" | "down" | "flat" | null = null;
   if (works.length >= 2) {
     const before = works.slice(1, 3);
-    const ref = before.reduce((a, b) => a + b, 0) / before.length;
-    const q = works[0] / ref;
+    const q = works[0] / (before.reduce((a, b) => a + b, 0) / before.length);
     trend = q > 1.05 ? "up" : q < 0.95 ? "down" : "flat";
   }
   const trendText = trend === "up" ? "↑ trending up" : trend === "down" ? "↓ lighter than before" : trend === "flat" ? "→ steady" : null;
@@ -418,6 +523,7 @@ function CandidateRow({
               </span>
             )}
           </span>
+          <span className={`block text-[11px] ${tag.legacy.length ? "text-amber-800" : "text-zinc-500"}`}>{tagText(tag)}</span>
           {last ? (
             <>
               <span className="block text-xs text-zinc-700">

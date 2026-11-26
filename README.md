@@ -12,19 +12,24 @@ This is a calendar log for workouts, meals, weight and sleep, built with Next.js
   - **How hard was today's training?** Rate the day 1–10. Load = effort × minutes trained (weights, sports and runs together). If you don't rate a day, the effort is estimated: lifting from how your work on each exercise compares with your last 4 sessions of it, sports from the intensity you picked, runs from your speed.
   - **Weight Training:**
     - Pick the type: Push, Pull, Legs, Upper Body, Lower Body or Rest. Each type trains a set of muscles:
-      - Push: chest, shoulders, triceps
-      - Pull: back, biceps, forearms
-      - Upper Body: all six of those
-      - Legs / Lower Body: quads, hamstrings, glutes, calves
-    - You tag each exercise with the muscles it works (one or more), once. Tags are saved with the exercise. Tap the tags on an exercise card to change them.
-    - **Add exercises** then shows:
+      - Push: upper, middle and lower chest, front and side delts, triceps
+      - Pull: traps, rhomboids, lats, rear delts, biceps, forearms
+      - Upper Body: all of those
+      - Legs / Lower Body: glutes, quads, hamstrings, calf
+      - The Core session: upper abs, lower abs, obliques
+    - You tag each exercise with the muscles it works (one or more), once. The muscles are grouped: Chest, Shoulders, Back, Core, Arms and Legs. Tags are saved with the exercise. Tap the tags on an exercise card to change them.
+    - **Add exercises** (in the main workout and the Core session) then shows:
       - **Repeat a recent session:** your last 3 days that hit those muscles, whatever type the day was. For example, an Upper day's chest and triceps lifts count on a Push day. **Select these** ticks them all.
-      - **By muscle:** every tagged exercise for those muscles. Each shows when you last did it, your top set, sets, volume and the trend over your last 3 sessions. Filter by one muscle with the chips.
-      - **Exercises without muscles:** listed so you can tag them.
+      - **By muscle:** every tagged exercise for those muscles, under group headings. Each shows its muscles, when you last did it, your top set, sets, volume and the trend over your last 3 sessions. Filter by group, then by part.
+      - **Exercises to tag:** ones without muscles, or with an old broad tag (Chest, Back, Shoulders) that needs the specific part.
     - Last time's numbers appear in grey in each set. Tap **✓** to log the set as shown, or type or use **− / +** to change it first. Ticking a set starts a rest timer.
     - A summary bar stays at the top: sets done, minutes, effort and new bests. Finished exercises fold into one line.
     - Each exercise says how it went vs last time: **New best** (estimated one-rep max), **+2.5 kg vs last**, **+1 rep vs last** or **Same as last**.
     - Units switch per exercise (kg/lb). There is a separate **Core session** where sets can be timed.
+    - **Circuits and supersets** (main workout and Core): exercises done back to back, for a number of rounds. A session can mix circuits and straight sets.
+      - **Starting one:** tick several exercises in Add exercises and tap **↻ As circuit**, or tap **↻** on an exercise and use **+ Exercise** to add more.
+      - **Logging:** you log each round's actual reps, weight or seconds. Last time's numbers show in grey, and one **✓** per round fills them in and starts the rest timer. Finished rounds fold into one line.
+      - **Repeating:** exercises you last did together in a circuit are put back into a circuit when you add them again. **⇵** splits a circuit back into separate exercises.
     - Enter the **session length** for the calorie estimate. If you leave it blank, it's worked out from your sets (3 min per set).
   - **Sports:** the sport, minutes played and intensity. You can also add set scores (yours vs opponent's) for sports scored in sets.
   - **Running:** duration, plus distance if you have it. It shows pace and speed.
