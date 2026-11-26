@@ -3,15 +3,18 @@
 This is a calendar log for workouts, meals, weight and sleep, built with Next.js and Supabase. It deploys to Vercel.
 
 - **Calendar:** switch between four views, each with its own monthly stats.
-  - **Workout:** weight-training type, sports and runs, volume, and calories burned by workouts.
+  - **Workout:** weight-training type, sports and runs, and calories burned by workouts. Each day is shaded by effort (1–5) compared with your previous 4 weeks, with ★ on days you set a personal best. Above the calendar, bars show training load per week.
   - **Weight:** your morning weigh-ins.
   - **Calories:** daily surplus or deficit, plus calories eaten.
   - **Sleep:** hours slept, colour-coded.
 - **Day page:** morning weight at the top, then your workouts (and meals, when switched on in `src/lib/features.ts`). One Save button saves everything.
 - **Workout tab:** three sub-tabs, so you can log any mix of them on the same day. Each shows an estimate of calories burned.
+  - **How hard was today's training?** Rate the day 1–10. Load = effort × minutes trained (weights, sports and runs together). If you don't rate a day, the effort is estimated: lifting from how your work on each exercise compares with your last 4 sessions of it, sports from the intensity you picked, runs from your speed.
   - **Weight Training:**
     - Pick the type: Push, Pull, Legs, Upper Body, Lower Body or Rest. Choosing a type lists every exercise you've done on that type, with your most recent numbers, ready to tick and add.
-    - Each exercise shows **Last** (date + sets), a per-set **Prev** column, and your volume vs last time.
+    - Last time's numbers appear in grey in each set. Tap **✓** to log the set as shown, or type or use **− / +** to change it first. Ticking a set starts a rest timer.
+    - A summary bar stays at the top: sets done, minutes, effort and new bests. Finished exercises fold into one line.
+    - Each exercise says how it went vs last time: **New best** (estimated one-rep max), **+2.5 kg vs last**, **+1 rep vs last** or **Same as last**.
     - Units switch per exercise (kg/lb). There is a separate **Core session** where sets can be timed.
     - Enter the **session length** for the calorie estimate. If you leave it blank, it's worked out from your sets (3 min per set).
   - **Sports:** the sport, minutes played and intensity. You can also add set scores (yours vs opponent's) for sports scored in sets.

@@ -61,10 +61,13 @@ create policy "own day exercises" on public.day_exercises
 --             "sets": [{ "reps": 10, "weight": 40, "seconds": null }] }]
 -- Weight-training duration in minutes (optional; used for the calorie-burn estimate)
 alter table public.workout_days add column if not exists duration_min numeric check (duration_min > 0);
+-- How hard the day's training felt, 1-10 (optional; covers weights, sports and runs)
+alter table public.workout_days add column if not exists effort smallint check (effort between 1 and 10);
 
--- (older versions of this function had 3 parameters)
+-- (older versions of this function had 3 or 4 parameters)
 drop function if exists public.save_day(date, text, jsonb);
-create or replace function public.save_day(p_date date, p_type text, p_items jsonb, p_duration_min numeric default null)
+drop function if exists public.save_day(date, text, jsonb, numeric);
+create or replace function public.save_day(p_date date, p_type text, p_items jsonb, p_duration_min numeric default null, p_effort int default null)
 returns void
 language plpgsql
 security invoker
@@ -80,15 +83,15 @@ begin
     raise exception 'not signed in';
   end if;
 
-  if p_type is null and p_duration_min is null and jsonb_array_length(coalesce(p_items, '[]'::jsonb)) = 0 then
+  if p_type is null and p_duration_min is null and p_effort is null and jsonb_array_length(coalesce(p_items, '[]'::jsonb)) = 0 then
     delete from public.workout_days where user_id = auth.uid() and date = p_date;
     return;
   end if;
 
-  insert into public.workout_days (user_id, date, type, duration_min, updated_at)
-  values (auth.uid(), p_date, p_type, p_duration_min, now())
+  insert into public.workout_days (user_id, date, type, duration_min, effort, updated_at)
+  values (auth.uid(), p_date, p_type, p_duration_min, p_effort, now())
   on conflict (user_id, date) do update
-    set type = excluded.type, duration_min = excluded.duration_min, updated_at = now()
+    set type = excluded.type, duration_min = excluded.duration_min, effort = excluded.effort, updated_at = now()
   returning id into v_day_id;
 
   delete from public.day_exercises where day_id = v_day_id;
@@ -120,7 +123,7 @@ begin
 end;
 $$;
 
-grant execute on function public.save_day(date, text, jsonb, numeric) to authenticated;
+grant execute on function public.save_day(date, text, jsonb, numeric, int) to authenticated;
 
 -- ============================================================
 -- Daily log (morning weight + last night's sleep), foods and meals

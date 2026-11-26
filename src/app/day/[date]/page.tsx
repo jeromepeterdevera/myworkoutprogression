@@ -26,6 +26,7 @@ import {
   weightTrainingMinutes,
 } from "@/lib/activity";
 import { loadProfile } from "@/lib/daily";
+import { EFFORTS, LiftHistory, addToHistory, bestBefore, effortLabel, trainingFor } from "@/lib/effort";
 import { Food, Meal, MealEntry, sumEntries, toFood } from "@/lib/nutrition";
 import {
   ExerciseEntry,
@@ -37,7 +38,6 @@ import {
   WorkoutType,
   convert,
   dayTotals,
-  formatNumber,
   formatSeconds,
   newKey,
   parseISODate,
@@ -113,6 +113,11 @@ export default function DayPage() {
   const [items, setItems] = useState<ExerciseEntry[]>([]);
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [durationMin, setDurationMin] = useState<number | null>(null);
+  const [effort, setEffort] = useState<number | null>(null);
+  const [liftHist, setLiftHist] = useState<LiftHistory>(new Map());
+  // rest timer: when the last set was ticked off
+  const [lastSetAt, setLastSetAt] = useState<number | null>(null);
+  const [now, setNow] = useState(() => Date.now());
   const [sub, setSub] = useState<WorkoutSub>("weights");
 
   // sports & runs
@@ -176,7 +181,7 @@ export default function DayPage() {
 
     const dayReq = sb
       .from("workout_days")
-      .select("type, duration_min, day_exercises(section, position, unit, mode, sets, exercises(name))")
+      .select("type, duration_min, effort, day_exercises(section, position, unit, mode, sets, exercises(name))")
       .eq("date", date)
       .maybeSingle();
     const logReq = sb.from("daily_logs").select("weight_kg, bed_time, wake_time").eq("date", date).maybeSingle();
@@ -258,6 +263,11 @@ export default function DayPage() {
       }
     }
     setHistory([...map.values()].sort((a, b) => (b.last?.date ?? "").localeCompare(a.last?.date ?? "")));
+    const lh: LiftHistory = new Map();
+    for (const r of [...histRows].sort((a, b) => (a.workout_days?.date ?? "").localeCompare(b.workout_days?.date ?? ""))) {
+      if (r.exercises?.name && r.workout_days) addToHistory(lh, r.exercises.name, r.workout_days.date, r);
+    }
+    setLiftHist(lh);
 
     const day = dayRes.data;
     const rows = ((day?.day_exercises ?? []) as unknown as RawRow[]).sort(
@@ -265,6 +275,8 @@ export default function DayPage() {
     );
     setType((day?.type as WorkoutType) ?? null);
     setDurationMin(day?.duration_min != null ? Number(day.duration_min) : null);
+    setEffort(day?.effort != null ? Number(day.effort) : null);
+    setLastSetAt(null);
     setItems(
       rows.map((r) => ({
         key: newKey(),
@@ -316,6 +328,14 @@ export default function DayPage() {
     load();
   }, [load]);
 
+  // rest timer
+  useEffect(() => {
+    if (lastSetAt == null) return;
+    setNow(Date.now());
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [lastSetAt]);
+
   // warn before leaving with unsaved changes
   useEffect(() => {
     if (!dirty) return;
@@ -354,8 +374,8 @@ export default function DayPage() {
           section,
           unit: last?.unit ?? opts?.unit ?? "kg",
           mode: last?.mode ?? opts?.mode ?? "reps",
-          // prefill with last session's numbers so you can bump them up
-          sets: last ? last.sets.map((s) => ({ ...s })) : [{ reps: null, weight: null, seconds: null }],
+          // one empty set per set last time; last time's numbers show as suggestions, ✓ copies them
+          sets: (last?.sets.length ? last.sets : [null]).map(() => ({ reps: null, weight: null, seconds: null })),
         });
       }
       return [...prev, ...added];
@@ -421,13 +441,17 @@ export default function DayPage() {
     setRuns(next);
     markDirty("activities");
   };
+  const pickEffort = (n: number) => {
+    setEffort((cur) => (cur === n ? null : n));
+    markDirty("workout");
+  };
   const changeDuration = (v: number | null) => {
     setDurationMin(v && v > 0 ? v : null);
     markDirty("workout");
   };
 
   // ---------- save ----------
-  const saveWorkout = async (t: WorkoutType | null, list: ExerciseEntry[], duration: number | null) => {
+  const saveWorkout = async (t: WorkoutType | null, list: ExerciseEntry[], duration: number | null, eff: number | null) => {
     const payload = list.map((i) => ({
       name: i.name,
       section: i.section,
@@ -440,6 +464,7 @@ export default function DayPage() {
       p_type: t,
       p_items: payload,
       p_duration_min: duration,
+      p_effort: eff,
     });
     return error?.message ?? null;
   };
@@ -488,7 +513,7 @@ export default function DayPage() {
       parts.map(async (p) => {
         const err =
           p === "workout"
-            ? await saveWorkout(type, items, durationMin)
+            ? await saveWorkout(type, items, durationMin, effort)
             : p === "activities"
               ? await saveActivities()
               : p === "meals"
@@ -513,11 +538,14 @@ export default function DayPage() {
 
   const clearWorkout = async () => {
     if (!confirm("Clear the weight training logged for this day?")) return;
+    // the effort rating covers sports and runs too, so it stays if any are logged
+    const keepEffort = sports.length || runs.length ? effort : null;
     setType(null);
     setItems([]);
     setDurationMin(null);
+    setEffort(keepEffort);
     setSaving(true);
-    const err = await saveWorkout(null, [], null);
+    const err = await saveWorkout(null, [], null, keepEffort);
     setSaving(false);
     if (err) {
       setMessage({ kind: "err", text: err });
@@ -573,6 +601,10 @@ export default function DayPage() {
   const runsKcal = runs.reduce((a, r) => a + runKcal(r, kg), 0);
   const exerciseKcalTotal = weightsKcal + sportsKcal + runsKcal;
   const baseline = baselineKcal(profile, kg, date);
+
+  const training = trainingFor({ type, durationMin, exercises: items, sports, runs, rated: effort }, liftHist);
+  const setsPlanned = items.reduce((a, i) => a + i.sets.length, 0);
+  const restSec = lastSetAt == null ? null : Math.max(0, Math.floor((now - lastSetAt) / 1000));
 
   if (loading) {
     return <div className="flex min-h-dvh items-center justify-center text-zinc-400">Loading…</div>;
@@ -666,6 +698,56 @@ export default function DayPage() {
         </section>
       )}
 
+      {tab === "workout" && (training || effort != null) && (
+        <section className="mb-4 rounded-xl border border-zinc-200 bg-white px-3 py-2.5">
+          <div className="flex items-baseline justify-between gap-2">
+            <h2 className="text-sm font-medium">How hard was today&apos;s training?</h2>
+            {effort != null && (
+              <span className="text-sm font-semibold">
+                {effort}/10 · {effortLabel(effort)}
+              </span>
+            )}
+          </div>
+          <div className="mt-2 grid grid-cols-10 gap-1" role="radiogroup" aria-label="Effort, 1 to 10">
+            {EFFORTS.map((n) => (
+              <button
+                key={n}
+                type="button"
+                role="radio"
+                aria-checked={effort === n}
+                aria-label={`${n}, ${effortLabel(n)}`}
+                onClick={() => pickEffort(n)}
+                className={`rounded-md border py-2 text-sm font-semibold tabular-nums transition ${
+                  effort === n
+                    ? "border-zinc-900 bg-zinc-900 text-white"
+                    : effort != null && n < effort
+                      ? "border-orange-200 bg-orange-100 text-zinc-800"
+                      : "border-zinc-300 bg-white text-zinc-700 hover:bg-zinc-50"
+                }`}
+              >
+                {n}
+              </button>
+            ))}
+          </div>
+          <div className="mt-1 flex justify-between text-[10px] text-zinc-500">
+            <span>Very easy</span>
+            <span>Moderate</span>
+            <span>All-out</span>
+          </div>
+          {training && (
+            <p className="mt-1.5 text-xs text-zinc-600">
+              {effort == null && (
+                <>
+                  Not rated yet. Estimated <b>{training.estimated.toFixed(1)}/10</b> from what you logged.{" "}
+                </>
+              )}
+              Load: {effort ?? `≈ ${training.estimated.toFixed(1)}`} × {Math.round(training.minutes)} min ={" "}
+              <b>{training.load.toLocaleString()}</b>
+            </p>
+          )}
+        </section>
+      )}
+
       {tab === "workout" && (
         <nav className="mb-4 flex gap-1 overflow-x-auto border-b border-zinc-200 text-sm font-medium">
           {WORKOUT_SUBS.map((s) => {
@@ -715,15 +797,47 @@ export default function DayPage() {
             </div>
           </section>
 
-          {/* day totals */}
-          <section className="mb-5 grid grid-cols-3 gap-2 text-center">
-            <Total label={`Volume (${displayUnit})`} value={formatNumber(totals.volume)} />
-            <Total label="Working sets" value={String(totals.sets)} />
-            <Total
-              label="Core"
-              value={totals.coreSets ? `${totals.coreSets} sets${totals.coreSeconds ? ` · ${formatSeconds(totals.coreSeconds)}` : ""}` : "–"}
-            />
-          </section>
+          {/* live summary, stays at the top while you scroll */}
+          {items.length > 0 && (
+            <section className="sticky top-0 z-10 -mx-3 mb-4 flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-zinc-200 bg-white/95 px-3 py-2 text-sm backdrop-blur sm:mx-0 sm:rounded-xl sm:border">
+              <span>
+                <b className="tabular-nums">{setCount}</b>
+                <span className="text-zinc-500">/{setsPlanned} sets</span>
+              </span>
+              <span>
+                <b className="tabular-nums">{weightTrainingMinutes(durationMin, setCount)}</b>
+                <span className="text-zinc-500"> min{durationMin ? "" : " (est.)"}</span>
+              </span>
+              {training && (
+                <span>
+                  <span className="text-zinc-500">Effort </span>
+                  <b className="tabular-nums">{effort ?? `≈ ${training.estimated.toFixed(1)}`}</b>
+                  <span className="text-zinc-500">/10</span>
+                </span>
+              )}
+              {training && training.bests.length > 0 && (
+                <span className="font-medium text-amber-700">
+                  ★ {training.bests.length} new best{training.bests.length > 1 ? "s" : ""}
+                </span>
+              )}
+              {totals.coreSets > 0 && (
+                <span className="text-zinc-500">
+                  Core {totals.coreSets}
+                  {totals.coreSeconds ? ` · ${formatSeconds(totals.coreSeconds)}` : ""}
+                </span>
+              )}
+              {restSec != null && restSec < 600 && (
+                <button
+                  type="button"
+                  onClick={() => setLastSetAt(null)}
+                  className="ml-auto rounded-full bg-zinc-900 px-2.5 py-0.5 text-xs font-medium tabular-nums text-white"
+                  aria-label="Rest time since your last set. Tap to hide"
+                >
+                  Rest {Math.floor(restSec / 60)}:{String(restSec % 60).padStart(2, "0")}
+                </button>
+              )}
+            </section>
+          )}
 
           {/* duration (for calorie burn) */}
           <section className="mb-5 flex items-center gap-3 rounded-xl border border-zinc-200 bg-white px-3 py-2.5">
@@ -758,7 +872,9 @@ export default function DayPage() {
                     key={it.key}
                     entry={it}
                     last={historyByName.get(it.name.toLowerCase())?.last ?? null}
+                    bestKg={bestBefore(liftHist, it.name)}
                     displayUnit={displayUnit}
+                    onSetDone={() => setLastSetAt(Date.now())}
                     onChange={(n) => updateItem(it.key, n)}
                     onRemove={() => removeItem(it.key)}
                     onMove={(d) => moveItem(it.key, d)}
@@ -794,7 +910,9 @@ export default function DayPage() {
                   key={it.key}
                   entry={it}
                   last={historyByName.get(it.name.toLowerCase())?.last ?? null}
+                  bestKg={bestBefore(liftHist, it.name)}
                   displayUnit={displayUnit}
+                  onSetDone={() => setLastSetAt(Date.now())}
                   allowMode
                   onChange={(n) => updateItem(it.key, n)}
                   onRemove={() => removeItem(it.key)}
@@ -855,14 +973,5 @@ export default function DayPage() {
         </div>
       </div>
     </main>
-  );
-}
-
-function Total({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-lg border border-zinc-200 bg-white px-2 py-2">
-      <div className="text-base font-semibold sm:text-lg">{value}</div>
-      <div className="text-[11px] text-zinc-500">{label}</div>
-    </div>
   );
 }

@@ -27,6 +27,7 @@ import {
 } from "./sleep";
 import { SLEEP_COLUMNS, SleepRow, toSession } from "./sleepStore";
 import { DayExerciseRow, WorkoutType, dayTotals, parseISODate, toISODate } from "./workout";
+import { DayTraining, LOOKBACK_DAYS, LiftHistory, addToHistory, effortLevel, trainingFor } from "./effort";
 
 export interface DaySummary {
   date: string;
@@ -49,6 +50,10 @@ export interface DaySummary {
   nights: SleepNight[];
   /** weight logged on this day */
   weightKg: number | null;
+  /** effort and load of the day's training, null when nothing was logged */
+  training: DayTraining | null;
+  /** 1–5, the day's load compared with your previous 4 weeks */
+  effortLevel: number | null;
 }
 
 type Result<T> = { data: T[] | null; error: { message: string } | null };
@@ -161,20 +166,23 @@ export async function loadRange(rangeFrom: string, to: string) {
   const sb = supabase();
   // a week earlier too, so the first nights in range can be estimated from the days before them
   const from = addDays(rangeFrom, -CONTEXT_DAYS);
+  // 4 weeks earlier for training: each day's effort level compares it with the 4 weeks before
+  const trainFrom = addDays(rangeFrom, -LOOKBACK_DAYS);
   const [w, l, allW, m, s, r, z, p] = await Promise.all([
+    // all workouts up to the end: each exercise is compared with your earlier sessions of it
     fetchAll((a, b) =>
       sb
         .from("workout_days")
-        .select("date, type, duration_min, day_exercises(section, unit, mode, sets)")
-        .gte("date", from)
+        .select("date, type, duration_min, effort, day_exercises(section, unit, mode, sets, exercises(name))")
         .lte("date", to)
+        .order("date")
         .range(a, b)
     ),
     fetchAll((a, b) => sb.from("daily_logs").select("date, weight_kg").gte("date", from).lte("date", to).range(a, b)),
     fetchAll((a, b) => sb.from("daily_logs").select("date, weight_kg").not("weight_kg", "is", null).order("date").range(a, b)),
     fetchAll((a, b) => sb.from("meal_items").select("date, quantity, foods(*)").gte("date", from).lte("date", to).range(a, b)),
-    fetchAll((a, b) => sb.from("sport_sessions").select("date, sport, minutes, intensity").gte("date", from).lte("date", to).range(a, b)),
-    fetchAll((a, b) => sb.from("runs").select("date, seconds, distance, distance_unit").gte("date", from).lte("date", to).range(a, b)),
+    fetchAll((a, b) => sb.from("sport_sessions").select("date, sport, minutes, intensity").gte("date", trainFrom).lte("date", to).range(a, b)),
+    fetchAll((a, b) => sb.from("runs").select("date, seconds, distance, distance_unit").gte("date", trainFrom).lte("date", to).range(a, b)),
     fetchAll((a, b) =>
       sb
         .from("sleep_sessions")
@@ -195,7 +203,7 @@ export async function loadRange(rangeFrom: string, to: string) {
   const hasWeight = weights.length > 0;
 
   const days: Record<string, DaySummary> = {};
-  for (const date of datesBetween(from, to)) {
+  for (const date of datesBetween(trainFrom < from ? trainFrom : from, to)) {
     days[date] = {
       date,
       workoutType: null,
@@ -210,12 +218,23 @@ export async function loadRange(rangeFrom: string, to: string) {
       sleepMin: null,
       nights: [],
       weightKg: null,
+      training: null,
+      effortLevel: null,
     };
   }
   const kgOn = (date: string) => weightOn(date, weights) ?? FALLBACK_KG;
 
-  type WRow = { date: string; type: WorkoutType | null; duration_min: number | null; day_exercises: DayExerciseRow[] };
-  for (const row of w.data as WRow[]) {
+  type WRow = {
+    date: string;
+    type: WorkoutType | null;
+    duration_min: number | null;
+    effort: number | null;
+    day_exercises: (DayExerciseRow & { exercises: { name: string } | null })[];
+  };
+  const wRows = w.data as unknown as WRow[];
+  const wByDate = new Map(wRows.map((row) => [row.date, row]));
+  const sportsByDate = new Map<string, { minutes: number; intensity: Intensity }[]>();
+  for (const row of wRows) {
     const d = days[row.date];
     if (!d) continue;
     d.workoutType = row.type;
@@ -246,6 +265,9 @@ export async function loadRange(rangeFrom: string, to: string) {
     if (!d) continue;
     d.sports.push(row.sport);
     d.exerciseKcal += sportKcal({ sport: row.sport, minutes: Number(row.minutes), intensity: row.intensity }, kgOn(row.date));
+    const list = sportsByDate.get(row.date) ?? [];
+    list.push({ minutes: Number(row.minutes), intensity: row.intensity });
+    sportsByDate.set(row.date, list);
   }
 
   type RRow = { date: string; seconds: number; distance: number | null; distance_unit: "km" | "mi" };
@@ -260,6 +282,36 @@ export async function loadRange(rangeFrom: string, to: string) {
   for (const d of Object.values(days)) {
     d.baseline = baselineKcal(profile, kgOn(d.date), d.date);
     if (d.intake != null && d.baseline != null) d.balance = d.intake - d.baseline - d.exerciseKcal;
+  }
+
+  // training effort, oldest day first, so each day only sees the sessions before it
+  const hist: LiftHistory = new Map();
+  const recent: { date: string; load: number }[] = [];
+  let next = 0;
+  for (const date of Object.keys(days).sort()) {
+    while (next < wRows.length && wRows[next].date < date) {
+      const row = wRows[next++];
+      for (const ex of row.day_exercises ?? []) if (ex.exercises) addToHistory(hist, ex.exercises.name, row.date, ex);
+    }
+    const d = days[date];
+    const row = wByDate.get(date);
+    d.training = trainingFor(
+      {
+        type: d.workoutType,
+        durationMin: row?.duration_min == null ? null : Number(row.duration_min),
+        exercises: (row?.day_exercises ?? []).map((ex) => ({ ...ex, name: ex.exercises?.name ?? "" })),
+        sports: sportsByDate.get(date) ?? [],
+        runs: d.runs,
+        rated: row?.effort ?? null,
+      },
+      hist
+    );
+    if (d.training) {
+      const since = addDays(date, -LOOKBACK_DAYS);
+      while (recent.length && recent[0].date < since) recent.shift();
+      d.effortLevel = effortLevel(d.training.load, recent.map((x) => x.load));
+      recent.push({ date, load: d.training.load });
+    }
   }
 
   addNights((z.data as SleepRow[]).map(toSession), days, readSleepGoal());

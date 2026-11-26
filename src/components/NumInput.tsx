@@ -9,12 +9,17 @@ export default function NumInput({
   decimal,
   placeholder,
   ariaLabel,
+  ghost,
+  compact,
 }: {
   value: number | null;
   onChange: (v: number | null) => void;
   decimal?: boolean;
   placeholder?: string;
   ariaLabel?: string;
+  /** the placeholder is a suggested value (e.g. last time's), shown darker than a hint */
+  ghost?: boolean;
+  compact?: boolean;
 }) {
   const [text, setText] = useState(value == null ? "" : String(value));
 
@@ -40,7 +45,9 @@ export default function NumInput({
         if (raw === "" || raw === ".") onChange(null);
         else onChange(Number(raw));
       }}
-      className="w-full rounded-md border border-zinc-300 bg-white px-2 py-2 text-center text-base outline-none focus:border-zinc-900 placeholder:text-zinc-300"
+      className={`w-full min-w-0 rounded-md border border-zinc-300 bg-white py-2 text-center text-base outline-none focus:border-zinc-900 ${
+        compact ? "px-0.5" : "px-2"
+      } ${ghost ? "placeholder:text-zinc-400" : "placeholder:text-zinc-300"}`}
     />
   );
 }

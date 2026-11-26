@@ -9,7 +9,12 @@ import { formatDuration } from "@/lib/sleep";
 import { MEALS_ENABLED } from "@/lib/features";
 import { KM_PER_MI, profileComplete } from "@/lib/activity";
 import { DaySummary, loadRange } from "@/lib/daily";
-import { WORKOUT_TYPES, convert, dayTotals, formatNumber, toISODate, typeInfo } from "@/lib/workout";
+import { WORKOUT_TYPES, convert, dayTotals, toISODate, typeInfo } from "@/lib/workout";
+import { LEVEL_LABELS, effortLabel } from "@/lib/effort";
+import WeeklyLoad from "@/components/WeeklyLoad";
+
+/** Cell tint per effort level 1–5: one hue, lighter to darker. */
+const LEVEL_BG = ["", "bg-orange-50", "bg-orange-100", "bg-orange-200", "bg-orange-300", "bg-orange-400"];
 
 type View = "workout" | "weight" | "calories" | "sleep";
 const VIEWS: { value: View; label: string }[] = [
@@ -140,17 +145,17 @@ export default function CalendarPage() {
     }
 
     let sessions = 0;
-    let volume = 0;
     let km = 0;
+    const efforts: number[] = [];
     for (const d of inMonth) {
-      const t = dayTotals(d.exercises, unit);
       if ((d.workoutType && d.workoutType !== "rest") || d.sports.length || d.runs.length) sessions++;
-      volume += t.volume;
+      if (d.training) efforts.push(d.training.effort);
       for (const r of d.runs) if (r.distance) km += r.unit === "mi" ? r.distance * KM_PER_MI : r.distance;
     }
+    const e = avg(efforts);
     return [
       { label: "Active days", value: String(sessions) },
-      { label: `Volume (${unit})`, value: formatNumber(volume) },
+      { label: "Avg effort", value: e == null ? "–" : `${e.toFixed(1)}/10` },
       { label: `Run (${distUnit})`, value: km ? (distUnit === "mi" ? km / KM_PER_MI : km).toFixed(1) : "–" },
     ];
   }, [view, days, monthPrefix, unit, distUnit]);
@@ -198,6 +203,8 @@ export default function CalendarPage() {
         ))}
       </div>
 
+      {view === "workout" && <WeeklyLoad grid={grid.map(toISODate)} days={days} today={todayISO} />}
+
       {view === "calories" && !hasProfile && !loading && (
         <p className="mb-3 rounded-lg bg-zinc-100 px-3 py-2 text-sm text-zinc-700">
           Fill in your{" "}
@@ -225,6 +232,8 @@ export default function CalendarPage() {
             const inMonth = d.getMonth() === month.getMonth();
             const info = typeInfo(day?.workoutType);
             const t = day ? dayTotals(day.exercises, unit) : null;
+            const tr = view === "workout" ? day?.training : null;
+            const level = tr ? day!.effortLevel! : 0;
             const runDist = day?.runs.reduce((a, r) => {
               if (!r.distance) return a;
               const km = r.unit === "mi" ? r.distance * KM_PER_MI : r.distance;
@@ -234,9 +243,14 @@ export default function CalendarPage() {
               <Link
                 key={iso}
                 href={view === "sleep" ? `/sleep?date=${iso}` : `/day/${iso}`}
-                className={`flex min-h-[84px] min-w-0 flex-col gap-0.5 border-b border-r border-zinc-100 p-1 text-left transition hover:bg-zinc-50 sm:min-h-[100px] sm:p-1.5 ${
-                  inMonth ? "" : "bg-zinc-50/70 text-zinc-400"
-                }`}
+                title={
+                  tr
+                    ? `${LEVEL_LABELS[level]} · effort ${tr.rated ?? `≈ ${tr.estimated.toFixed(1)}`}/10 (${effortLabel(tr.effort)}${tr.rated ? "" : ", estimated"}) × ${Math.round(tr.minutes)} min = load ${tr.load}${tr.bests.length ? ` · new best: ${tr.bests.join(", ")}` : ""}`
+                    : undefined
+                }
+                className={`flex min-h-[84px] min-w-0 flex-col gap-0.5 border-b border-r border-zinc-100 p-1 text-left transition hover:brightness-95 sm:min-h-[100px] sm:p-1.5 ${
+                  level ? LEVEL_BG[level] : inMonth ? "hover:bg-zinc-50" : "bg-zinc-50/70"
+                } ${inMonth ? "" : `text-zinc-400 ${level ? "opacity-60" : ""}`}`}
               >
                 <div className="flex items-center justify-between">
                   <span
@@ -246,11 +260,18 @@ export default function CalendarPage() {
                   >
                     {d.getDate()}
                   </span>
-                  {view === "workout" && t && t.coreSets > 0 && (
-                    <span className="rounded bg-teal-100 px-1 text-[9px] font-bold text-teal-700 sm:text-[10px]" title="Core done">
-                      CORE
-                    </span>
-                  )}
+                  <span className="flex items-center gap-0.5">
+                    {tr && tr.bests.length > 0 && (
+                      <span className="text-[11px] leading-none text-amber-600 sm:text-sm" title={`New best: ${tr.bests.join(", ")}`}>
+                        ★
+                      </span>
+                    )}
+                    {view === "workout" && t && t.coreSets > 0 && (
+                      <span className="rounded bg-teal-100 px-1 text-[9px] font-bold text-teal-700 sm:text-[10px]" title="Core done">
+                        CORE
+                      </span>
+                    )}
+                  </span>
                 </div>
 
                 {view === "workout" && day && (
@@ -273,14 +294,9 @@ export default function CalendarPage() {
                         RUN{runDist ? ` ${runDist.toFixed(1)}` : ""}
                       </span>
                     )}
-                    {t && t.volume > 0 && (
-                      <span className="text-[10px] leading-tight text-zinc-700 sm:text-xs">
-                        <span className="font-semibold">{formatNumber(t.volume)}</span>
-                        <span className="hidden sm:inline"> {unit}</span>
-                      </span>
-                    )}
+                    {tr && <EffortBars level={level} rated={tr.rated != null} />}
                     {day.exerciseKcal >= 1 && (
-                      <span className="text-[9px] leading-tight text-orange-700 sm:text-[11px]">
+                      <span className="text-[9px] leading-tight text-zinc-700 sm:text-[11px]">
                         {Math.round(day.exerciseKcal)}
                         <span className="hidden sm:inline"> kcal</span>
                       </span>
@@ -357,7 +373,29 @@ export default function CalendarPage() {
           <span className="flex items-center gap-1">
             <span className="rounded bg-teal-100 px-1 text-[9px] font-bold text-teal-700">CORE</span> Core done
           </span>
-          <span className="text-orange-700">Orange number = kcal burned by workouts</span>
+          <span>Number = kcal burned by workouts</span>
+        </div>
+      )}
+
+      {view === "workout" && (
+        <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1.5 text-xs text-zinc-600">
+          <span className="flex items-center gap-1">
+            Effort vs your last 4 weeks:
+            <span className="text-zinc-500">easier</span>
+            {[1, 2, 3, 4, 5].map((l) => (
+              <span key={l} className={`h-3.5 w-3.5 rounded-sm border border-zinc-200 ${LEVEL_BG[l]}`} title={LEVEL_LABELS[l]} />
+            ))}
+            <span className="text-zinc-500">harder</span>
+          </span>
+          <span className="flex items-center gap-1">
+            <span className="w-8">
+              <EffortBars level={3} rated={false} />
+            </span>
+            faded = estimated (not rated)
+          </span>
+          <span>
+            <span className="text-amber-600">★</span> personal best
+          </span>
         </div>
       )}
 
@@ -396,5 +434,19 @@ function Stat({ label, value }: { label: string; value: string }) {
       <div className="text-lg font-semibold">{value}</div>
       <div className="text-[11px] text-zinc-500">{label}</div>
     </div>
+  );
+}
+
+/** Five segments, filled up to the level; faded when the effort was estimated rather than rated. */
+function EffortBars({ level, rated }: { level: number; rated: boolean }) {
+  return (
+    <span className="flex gap-[2px] py-0.5" aria-label={`Effort ${level} of 5${rated ? "" : " (estimated)"}`}>
+      {[1, 2, 3, 4, 5].map((i) => (
+        <span
+          key={i}
+          className={`h-1.5 flex-1 rounded-[1px] ${i <= level ? (rated ? "bg-zinc-800" : "bg-zinc-800/40") : "bg-zinc-900/10"}`}
+        />
+      ))}
+    </span>
   );
 }
