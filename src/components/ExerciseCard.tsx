@@ -60,7 +60,9 @@ export default function ExerciseCard({
   const [open, setOpen] = useState(!complete);
   const [editMuscles, setEditMuscles] = useState(false);
 
-  const ghostFor = (i: number) => suggestedSet(entry, last, i);
+  /** suggestions kept with their sets after one is removed (they're otherwise matched by position) */
+  const [pinned, setPinned] = useState<(SetEntry | null)[] | null>(null);
+  const ghostFor = (i: number) => (pinned && i < pinned.length ? pinned[i] : suggestedSet(entry, last, i));
 
   const setSet = (i: number, patch: Partial<SetEntry>) =>
     onChange({ ...entry, sets: entry.sets.map((s, j) => (j === i ? { ...s, ...patch } : s)) });
@@ -79,7 +81,10 @@ export default function ExerciseCard({
     onChange({ ...entry, sets: [...entry.sets, { ...EMPTY }] });
     setOpen(true);
   };
-  const removeSet = (i: number) => onChange({ ...entry, sets: entry.sets.filter((_, j) => j !== i) });
+  const removeSet = (i: number) => {
+    setPinned(entry.sets.map((_, j) => ghostFor(j)).filter((_, j) => j !== i));
+    onChange({ ...entry, sets: entry.sets.filter((_, j) => j !== i) });
+  };
 
   const changeUnit = (u: Unit) => {
     if (u === entry.unit) return;

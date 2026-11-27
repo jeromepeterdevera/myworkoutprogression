@@ -73,6 +73,12 @@ export default function CircuitCard({
   const [newName, setNewName] = useState("");
   const [newMode, setNewMode] = useState<Mode>("reps");
   const listId = useId();
+  /** per exercise key: suggestions kept with their rounds after one is removed */
+  const [pinned, setPinned] = useState<Record<string, (SetEntry | null)[]>>({});
+  const ghostOf = (e: ExerciseEntry, r: number) => {
+    const p = pinned[e.key];
+    return p && r < p.length ? p[r] : suggestedSet({ ...e, sets: padded(e, rounds) }, lastOf(e.name), r);
+  };
 
   const setCell = (key: string, r: number, patch: Partial<SetEntry>) =>
     onItems(
@@ -86,7 +92,7 @@ export default function CircuitCard({
   const tickRound = (r: number) => {
     const next = items.map((e) => {
       const sets = padded(e, rounds);
-      return { ...e, sets: sets.map((s, j) => (j === r ? fillSet(s, suggestedSet({ ...e, sets }, lastOf(e.name), r), e.mode) : s)) };
+      return { ...e, sets: sets.map((s, j) => (j === r ? fillSet(s, ghostOf(e, r), e.mode) : s)) };
     });
     onItems(next);
     onSetDone?.();
@@ -98,7 +104,12 @@ export default function CircuitCard({
   };
 
   const addRound = () => onItems(items.map((e) => ({ ...e, sets: [...padded(e, rounds), { ...EMPTY }] })));
-  const removeRound = (r: number) => onItems(items.map((e) => ({ ...e, sets: padded(e, rounds).filter((_, j) => j !== r) })));
+  const removeRound = (r: number) => {
+    const keep = (_: unknown, j: number) => j !== r;
+    setPinned(Object.fromEntries(items.map((e) => [e.key, Array.from({ length: rounds }, (_, j) => ghostOf(e, j)).filter(keep)])));
+    setOpenDone((prev) => new Set([...prev].filter((x) => x !== r).map((x) => (x > r ? x - 1 : x))));
+    onItems(items.map((e) => ({ ...e, sets: padded(e, rounds).filter(keep) })));
+  };
 
   const submitNew = (e: React.FormEvent) => {
     e.preventDefault();
@@ -223,7 +234,7 @@ export default function CircuitCard({
               </button>
             );
           }
-          const ghosts = items.map((e) => suggestedSet({ ...e, sets: padded(e, rounds) }, lastOf(e.name), r));
+          const ghosts = items.map((e) => ghostOf(e, r));
           const canTick = items.every((e, i) => isSetDone(fillSet(setAt(e, r), ghosts[i], e.mode), e.mode));
           return (
             <div key={r} className="rounded-lg border border-zinc-200 p-2">
